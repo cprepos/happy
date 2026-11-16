@@ -9,6 +9,7 @@ import com.slopus.happy.accounts.RnServerConfigImporter
 import com.slopus.happy.accounts.accountId
 import com.slopus.happy.call.CallController
 import com.slopus.happy.agent.AgentSessions
+import com.slopus.happy.agent.StartupLink
 import com.slopus.happy.analytics.Analytics
 import com.slopus.happy.analytics.AnalyticsAgent
 import com.slopus.happy.analytics.AnalyticsBuild
@@ -43,6 +44,7 @@ import com.slopus.happy.config.ServerConfig
 import com.slopus.happy.data.HappyDatabase
 import com.slopus.happy.data.HappyStore
 import com.slopus.happy.data.LocalCaches
+import com.slopus.happy.diagnostics.Timing
 import com.slopus.happy.model.settings.LanguageController
 import com.slopus.happy.model.settings.SettingsRepository
 import com.slopus.happy.net.ConnectionStatus
@@ -62,6 +64,7 @@ import com.slopus.happy.connection.ServerSignInFlow
 import com.slopus.happy.connection.CloudAccount
 import com.slopus.happy.connection.HappyCloud
 import com.slopus.happy.connection.TailcatTransport
+import com.slopus.happy.connection.agentTransport
 import com.slopus.happy.connection.networkPath
 import com.slopus.happy.connection.defaultNetwork
 import com.slopus.happy.sync.AccountSync
@@ -123,6 +126,8 @@ class AppGraph(
     defaultServerUrl: String,
     secureStoreKeys: SecureStoreKeys = AndroidKeyStoreKeys(strongBox = AndroidKeyStoreKeys.hasStrongBox(context)),
     databaseName: String? = HappyDatabase.NAME,
+    /** The open agent connection's tunnel, already on its way since the process started; its session takes it. */
+    private val startup: StartupLink? = null,
 ) {
     private val appContext: Context = context.applicationContext ?: context
 
@@ -139,7 +144,7 @@ class AppGraph(
     init {
         // Before accounts had databases of their own. Local data resets rather than migrates.
         if (databaseName != null) appContext.deleteDatabase(HappyDatabase.NAME)
-        TailcatTransport.persistDerpMap(File(appContext.noBackupFilesDir, "tailcat/derpmap.json"))
+        TailcatTransport.persistDerpMap(StartupLink.derpMapFile(appContext))
     }
 
     val serverConfig = ServerConfig(
@@ -613,7 +618,11 @@ class AppGraph(
         started = (started + if (value) 1 else -1).coerceAtLeast(0)
         val was = foreground.value
         foreground.value = started > 0
-        if (was && !foreground.value) agentSessions.backgrounded()
+        if (!was && foreground.value) Timing.foreground()
+        if (was && !foreground.value) {
+            Timing.mark("background")
+            agentSessions.backgrounded()
+        }
     }
 
     /** Each agent connection's live link and cached home (AgentSessions). */
@@ -626,7 +635,8 @@ class AppGraph(
         foreground = isForeground,
         network = appContext.defaultNetwork(),
         chime = CompletionChime(appContext)::play,
-    )
+        makeTransport = { startup?.take(it) ?: agentTransport(it.address, it.port, it.publicUrl, it.tailcatAvailable != false) },
+    ).also { startup?.follow(openAgentId, agentConnections.accounts) }
 
     /** This installation's id: the push relay's `deviceId`, and the device environment reports name. */
     private val installationId = com.slopus.happy.push.InstallationId(appContext)

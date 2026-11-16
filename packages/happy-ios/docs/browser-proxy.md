@@ -45,11 +45,38 @@ append a second HTTP error response to its bytes.
   workspace explicitly marked local `compute.type: host`, never an arbitrary
   runner. Without a usable connection or route, loading fails with retry and
   **never creates a direct WebKit view**.
-- Each target opens authenticated `CONNECT /v0/workspaces/:id/proxy`, then
-  nested `CONNECT host:port`. The daemon chooses the workspace's runner. Its
-  CONNECT contract permits arbitrary valid host:port targets, including public
-  destinations. DNS resolution occurs remotely. TLS and WebSocket bytes remain
-  untouched, preserving real origins, cookies and redirects.
+- A chat link opens in its agent's own network, the one its commands run
+  in, as desktop's does: `GET /v0/workspaces/:ws/agents/:id/proxy` names it
+  (`networkId`), and each target opens authenticated
+  `CONNECT /v0/networks/:networkId/proxy`, then nested `CONNECT host:port`
+  (`BrowserNetwork.network`, `BrowserAgentNetwork`). For an agent in a
+  container that is the container, where its dev server listens; the
+  workspace's proxy refuses such a workspace (`501`). A `404` from the
+  network route (its environment changed) reads the agent's network again,
+  once. A paired computer that names no network (`404` on the read) has
+  only the workspace's; a server signed in to has no workspace proxy, so
+  there that `404` opens nothing. The workspace's is
+  `CONNECT /v0/workspaces/:id/proxy`, which is also what a link
+  outside a chat and an artifact's external requests use. Happy Cloud serves
+  the same pair of routes and no workspace proxy. The CONNECT contract
+  permits arbitrary valid host:port targets, including public destinations.
+  DNS resolution occurs remotely. TLS and WebSocket bytes remain untouched,
+  preserving real origins, cookies and redirects.
+- A network that carries only its computer's loopback says so in the
+  lookup (`destinations: "loopback"`, Happy Cloud; absent means every
+  destination, as on a computer). Its tunnels then take only `localhost`,
+  `*.localhost`, `127.0.0.0/8` and `[::1]` (and their aliases), decided by
+  the host as written, never by resolving it (`BrowserDestinations`); the
+  phone dials everything else itself over plain TCP (`BrowserDirect`), TLS
+  still the page's own. The trade-off: a page's public requests (fonts, CDNs,
+  APIs) leave from the phone's network, not the agent's, so they see the
+  phone's address and reach what the phone can reach, its LAN included, but
+  never the phone itself: a host that is or resolves to the phone's loopback
+  or `0.0.0.0` is refused (`BrowserDirect.isPhone`). A
+  network that didn't say so but refuses a destination past its loopback
+  (`403 destination_not_allowed` on the nested CONNECT) is treated the same
+  from then on; a refused loopback port (a reserved one) is never dialed
+  from the phone.
 - Bundled artifacts get a unique synthetic HTTP origin and a nonpersistent
   WebKit store. `/api/*` maps only to `/v0/artifacts/:id/api/*`; other paths map
   only to the opened version's files. All methods and query strings survive.
@@ -174,12 +201,38 @@ address that failed, not the last one that worked (`BrowserProblem`):
 | The proxy's tunnel to the computer failed (`browser_proxy_upstream_transport`) | Can't Reach <computer>; retried by itself when the link is back |
 | No session or route (`BrowserError.unavailable`) | Can't Open This Page |
 | A live artifact's own proxy refused (`BrowserError.liveUnavailable`, `browser_proxy_live_unavailable`) | This Page's Computer Isn't Available |
+| The agent's compute is gone (`BrowserError.computeGone`, `browser_proxy_compute_gone`) | Compute Disconnected; opens again by itself when it is back |
 | The computer refused the target (502/503/504 on CONNECT), connection refused or lost | Server Isn't Responding, naming host:port |
 | The proxy's own 502/503/504 response (`X-Happy-Proxy-Error`), whatever its body | Server Isn't Responding |
 | An error status with no body | Page Error <status>; one with a body shows as the page |
 | Timeout, DNS, TLS | Page Took Too Long, Can't Find the Server, Can't Open Securely |
 | The web process stopped | Reloaded once quietly; a second stop shows This Page Stopped Working |
 | A link to an app nothing opens | An alert over the page, or the error page when nothing was shown |
+
+**Compute disconnected.** On Happy Cloud an agent's compute can detach or go
+offline under an open page. The agent's `compute`, read with the agent and
+then from its `agent.updated` events (and read again after a resync), is
+authoritative (`BrowserAgentCompute`): `type: "none"` or `status: "offline"`
+closes the page, `status: "online"` opens it again at the address it was on
+(`BrowserComputeGate`). It is followed only once it has said online or
+offline: a computer's own agents report `type: "none"`, and their pages
+never close for it. A tunnel refused for the compute closes the page as the
+news does, before the news arrives: `409 no_compute`, or `503`
+`compute_offline`, `runner_unavailable` or `draining` (`BrowserCompute.gone`),
+on the agent's network read, the network route or the nested CONNECT, whose
+JSON body names the code; or an open WebSocket twin (a dev server's HMR
+socket) closed `1001` with reason `no_compute` or `compute_offline`. A twin
+closed `1000 idle` just ends (the page's socket reconnects), and `1008`,
+`429` and the dev server's own refusal (`502 proxy_target_unavailable`) are
+not the compute. Closing tears
+down the web view and the proxy, so nothing in the page keeps knocking. A
+compute back within its grace sends no news either way, so while the
+compute last said it was there, the page asks every 3 s, doubling to 30 s,
+whether a tunnel opens (`BrowserAgentNetwork.answers`). Try Again opens it
+at once, and it closes again if the compute is still gone. Reopened, a page
+whose server isn't responding yet (a dev server still starting) loads again
+after 2, 4, 8 and 15 s, then leaves Try Again (`BrowserReopenRetry`); an
+ordinary load never tries again by itself.
 
 WebKit only says the proxy refused a tunnel, so `BrowserProxy` keeps the last
 refusal per host (`BrowserRefusals`) and the screen reads it. Cancelled and

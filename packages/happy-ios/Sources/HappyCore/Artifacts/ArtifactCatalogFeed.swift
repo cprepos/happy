@@ -67,7 +67,9 @@ public actor ArtifactCatalogFeed {
         for listener in listeners.values { listener.yield(state) }
     }
 
-    /// Disk, then the computer, then its events, until `stop`.
+    /// Disk, then its events, until `stop`. The computer is read on
+    /// `refresh`: by its engine once each connection, after home, and by
+    /// the Artifacts screen as it opens.
     public func start() async {
         guard !started else { return }
         started = true
@@ -78,14 +80,9 @@ public actor ArtifactCatalogFeed {
         }
         let events = events
         following = Task { [weak self] in
-            let stream = await events()
-            await self?.refresh()
-            for await event in stream {
+            for await event in await events() {
                 guard !Task.isCancelled else { return }
-                switch event {
-                case .resync: await self?.refresh()
-                case .event(let envelope): await self?.receive(envelope)
-                }
+                if case .event(let envelope) = event { await self?.receive(envelope) }
             }
         }
     }

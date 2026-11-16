@@ -109,7 +109,6 @@ public actor FeedLibrary {
     private var live = false
     private var started = false
     private var following: [Task<Void, Never>] = []
-    private var connecting: Task<Void, Never>?
     private var reading: Task<Void, Never>?
     private var again = false
     private var lastKept: JSONValue?
@@ -174,7 +173,6 @@ public actor FeedLibrary {
     public func stop() {
         for task in following { task.cancel() }
         following = []
-        connecting?.cancel(); connecting = nil
         reading?.cancel(); reading = nil
         live = false
         for listener in listeners.values { listener.finish() }
@@ -182,34 +180,54 @@ public actor FeedLibrary {
     }
 
     /// The bootstrap was read: its `feedUnread` (nil from a daemon or for
-    /// a person without a feed), as of its event `cursor`.
-    public func bootstrap(unread: Int?, cursor: String?) async {
+    /// a person without a feed), as of its event `cursor`, and what its
+    /// `health` says of the Feed.
+    public func bootstrap(unread: Int?, cursor: String?, capabilities: FeedCapabilities) async {
         counted = unread != nil
         if let unread { setUnread(unread, cursor: cursor) }
-        let was = state.available
+        capable = capabilities.feed
+        covers = capabilities.covers
+        subjectFilter = capabilities.subjectFilter
+        // Updated to one that doesn't filter: Highlights comes from
+        // the whole list.
+        if !capabilities.subjectFilter { picked = nil }
         await settleAvailability()
         await commit()
-        // Health answered before home's read did: the newest page now, on
-        // its own task, as `connected` reads it.
-        if live, connecting == nil, was != true, state.available == true { Task { await self.refresh() } }
+        readFirstPage()
     }
 
-    /// The event stream opened: health says whether there is a feed, and
-    /// the newest page is read, on its own task, so the stream reads on.
-    public func connected() {
+    /// The stream said hello: what the person does reads from now.
+    public func opened() {
         live = true
-        connecting?.cancel()
-        connecting = Task { [weak self, routes] in
-            let capabilities: FeedCapabilities? = try? await routes.feedCapabilities()
-            guard !Task.isCancelled else { return }
-            await self?.healthAnswered(capabilities)
+        readFirstPage()
+    }
+
+    /// Nothing kept, once both the stream and the bootstrap say there is a
+    /// feed, whichever said it second: its first page, at once. Later
+    /// pages come with home (`connected`).
+    private func readFirstPage() {
+        guard live, state.available == true, !state.loaded, reading == nil else { return }
+        // Taken now, so the other event finds it under way: one read.
+        reading = Task {
+            await readFirst()
+            reading = nil
+            if again {
+                again = false
+                await refresh()
+            }
         }
+    }
+
+    /// Home was verified on a new connection: the newest page is read, and
+    /// the engine's next stage waits for it.
+    public func connected() async {
+        live = true
+        await refresh()
     }
 
     /// The stream went away: reads under way stop.
     public func disconnected() {
         live = false
-        connecting?.cancel(); connecting = nil
         reading?.cancel(); reading = nil
         again = false
         if state.refreshing || state.loadingMore {
@@ -217,21 +235,6 @@ public actor FeedLibrary {
             state.loadingMore = false
             publish()
         }
-    }
-
-    private func healthAnswered(_ capabilities: FeedCapabilities?) async {
-        connecting = nil
-        if let capabilities {
-            capable = capabilities.feed
-            covers = capabilities.covers
-            subjectFilter = capabilities.subjectFilter
-            // Updated to one that doesn't filter: Highlights comes from
-            // the whole list.
-            if !capabilities.subjectFilter { picked = nil }
-        }
-        await settleAvailability()
-        await commit()
-        if state.available == true { await refresh() }
     }
 
     /// A feed both health and the bootstrap vouch for; either saying no

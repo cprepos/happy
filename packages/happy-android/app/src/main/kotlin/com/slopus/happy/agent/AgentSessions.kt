@@ -51,17 +51,24 @@ class AgentSessions(
      * they are made again on the next open.
      */
     private val stagedFiles: File? = null,
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
     private val makeTransport: (AgentConnectionCredentials) -> Transport = { agentTransport(it.address, it.port, it.publicUrl, it.tailcatAvailable != false) },
 ) {
     private val sessions = HashMap<String, AgentSession>()
+    @Volatile private var openChat: Pair<String, String>? = null
+
+    fun setOpenChat(connectionId: String?, agentId: String?) {
+        openChat = if (connectionId != null && agentId != null) connectionId to agentId else null
+        if (connectionId != null && agentId != null) synchronized(sessions) { sessions[connectionId] }?.hintOpenChat(agentId)
+    }
 
     init {
-        // Discovery belongs to every paired account, not only the open
-        // session. These identity-only jobs never open a catalog or SSE and
+        // Discovery covers the other paired accounts; the open session uses
+        // its bootstrap identity. These jobs never open a catalog or SSE and
         // their transient failures cannot cancel the selected session.
         scope.launch {
-            combine(connections.accounts, foreground) { accounts, front ->
-                if (front) accounts.filterNot { it.revoked }.map { it.id }.toSet() else emptySet()
+            combine(connections.accounts, foreground, openId) { accounts, front, open ->
+                if (front) accounts.filterNot { it.revoked || it.id == open }.map { it.id }.toSet() else emptySet()
             }.distinctUntilChanged().collectLatest { ids ->
                 coroutineScope {
                     ids.forEach { id -> launch { refreshIdentity(id) } }
@@ -169,6 +176,9 @@ class AgentSessions(
                     parent = scope,
                     makeTransport = makeTransport,
                     chime = chime,
+                    openChat = { openChat?.takeIf { it.first == connectionId }?.second },
+                    clock = clock,
+                    initiallyActive = openId.value == connectionId && foreground.value && connections.accounts.value.none { it.id == connectionId && it.signInRequired },
                 )
             }
         }

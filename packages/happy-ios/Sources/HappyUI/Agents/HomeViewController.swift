@@ -907,7 +907,7 @@ extension HomeViewController {
     private func warmUp() {
         guard let session, !snapshot.allRows.isEmpty else { return }
         let shown = sidebar.shownRows
-        session.warm.update(rows: shown.isEmpty ? snapshot.rows : shown, visible: shown.isEmpty ? nil : sidebar.visibleRange, references: snapshot.references)
+        session.warm.update(rows: shown.isEmpty ? snapshot.rows : shown, visible: shown.isEmpty ? nil : sidebar.visibleRange, references: snapshot.references, verified: agentHome.live && !agentHome.syncing)
     }
 }
 

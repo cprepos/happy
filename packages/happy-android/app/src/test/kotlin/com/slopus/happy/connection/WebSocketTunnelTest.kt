@@ -86,6 +86,29 @@ class WebSocketTunnelTest {
     }
 
     @Test
+    fun anOpenTunnelClosedForItsComputeSaysSoAndAnIdleOneJustEnds() = runBlocking {
+        for ((code, reason) in listOf(1001 to "compute_offline", 1001 to "no_compute", 1000 to "idle", 1008 to "")) {
+            server.enqueue(MockResponse.Builder().webSocketUpgrade(object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    webSocket.close(code, reason.ifEmpty { null })
+                }
+            }).build())
+            val tunnel = withTimeout(10_000) { transport.webSocketTunnel("/v0/networks/n/proxy/websocket", "access-1") }
+            try {
+                val read = runCatching { withTimeout(10_000) { tunnel.read(65536) } }
+                if (code == 1001) {
+                    assertEquals("$code $reason", BrowserException.Kind.ComputeGone, (read.exceptionOrNull() as? BrowserException)?.kind)
+                } else {
+                    // An idle close, or a policy one, is no compute's: the stream ends.
+                    assertEquals("$code $reason", 0, read.getOrThrow().size)
+                }
+            } finally {
+                tunnel.close()
+            }
+        }
+    }
+
+    @Test
     fun aRefusedUpgradeCarriesItsAnswer() = runBlocking {
         server.enqueue(MockResponse.Builder().code(401).addHeader("Content-Type", "application/json").body("""{"error":"Unauthorized","code":"unauthorized"}""").build())
         try {
@@ -99,7 +122,6 @@ class WebSocketTunnelTest {
 
     @Test
     fun theBrowserPrefersTheWebSocketTwinWhenHealthOffersIt() = runBlocking {
-        server.enqueue(health)
         server.enqueue(MockResponse.Builder().webSocketUpgrade(object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 // The nested CONNECT's answer, as the daemon writes it inside the tunnel.
@@ -111,15 +133,14 @@ class WebSocketTunnelTest {
             }
         }).build())
         val client = AgentClient(transport, "device-token")
+        client.noteHealth(AgentClient.json.parseToJsonElement("""{"capabilities":{"webSocketTunnels":true}}""") as kotlinx.serialization.json.JsonObject)
         val tunnel = withTimeout(10_000) { BrowserTunnel.open(client, com.slopus.happy.browser.BrowserNetwork.workspace("w1"), com.slopus.happy.browser.BrowserPolicy.Authority.parse("localhost:3000")!!) }
         tunnel.close()
-        assertEquals("/v0/health", server.takeRequest().target)
         assertEquals("/v0/workspaces/w1/proxy/websocket", server.takeRequest().target)
     }
 
     @Test
     fun anEdgeThatRefusesConnectTurnsTunnelsOff() = runBlocking {
-        server.enqueue(MockResponse.Builder().addHeader("Content-Type", "application/json").body("""{"healthy":true,"ready":true,"version":{"protocol":33,"daemon":"1"}}""").build())
         // A load balancer's own page for CONNECT.
         server.enqueue(MockResponse.Builder().code(405).addHeader("Content-Type", "text/html").body("<html>Method Not Allowed</html>").build())
         val client = AgentClient(transport, "device-token")

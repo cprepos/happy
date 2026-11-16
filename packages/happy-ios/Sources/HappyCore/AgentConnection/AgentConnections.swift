@@ -49,6 +49,9 @@ public final class AgentConnections {
         didSet { if environment != nil { observeEnvironment() } }
     }
     private var environmentObservers: [NSObjectProtocol] = []
+    /// The open connection's tunnel, connecting since launch: its engine
+    /// takes it, and it is let go for any other (`keepStartup`).
+    public var startup: StartupLink?
 
     public init(credentials: any AgentConnectionCredentialStore, directory: URL?, makeTransport: @escaping @Sendable (AgentConnectionCredentials) -> any AgentTransport = { AgentHTTPTransport(address: $0.address, port: $0.port, publicUrl: $0.publicUrl, tailcatAvailable: $0.tailcatAvailable != false) }) {
         storage = AgentConnectionStorage(credentials: credentials, directory: directory)
@@ -74,14 +77,17 @@ public final class AgentConnections {
         return meter
     }
 
-    /// A transport to `id`'s computer that counts on its recorder.
-    func transport(_ credential: AgentConnectionCredentials, for id: String) -> any AgentTransport {
-        AgentEndpointTransport(endpoint: endpoint(credential, for: id), metrics: meter(id), make: maker(credential, for: id))
+    /// A transport to `id`'s computer that counts on its recorder; with
+    /// `startup`, over its tunnel when it was made for these credentials.
+    func transport(_ credential: AgentConnectionCredentials, for id: String, startup: StartupLink? = nil) -> any AgentTransport {
+        AgentEndpointTransport(endpoint: endpoint(credential, for: id), metrics: meter(id), make: maker(credential, for: id, startup: startup))
     }
 
     /// `makeTransport`, signing every request in for a signed-in server.
-    private func maker(_ credential: AgentConnectionCredentials, for id: String) -> @Sendable (AgentConnectionCredentials) -> any AgentTransport {
-        let make = makeTransport
+    private func maker(_ credential: AgentConnectionCredentials, for id: String, startup: StartupLink? = nil) -> @Sendable (AgentConnectionCredentials) -> any AgentTransport {
+        let base = makeTransport
+        let make: @Sendable (AgentConnectionCredentials) -> any AgentTransport
+        if let startup { make = { credentials in startup.take(credentials) ?? base(credentials) } } else { make = base }
         guard credential.signIn != nil else { return make }
         let authorization = authorization(credential, for: id), origin = credential.publicUrl ?? ""
         return { SignedInTransport(base: make($0), authorization: authorization, origin: origin) }
@@ -130,6 +136,7 @@ public final class AgentConnections {
             accounts[index].revoked = true
             accounts[index].status = .revoked
         }
+        keepStartup()
         // The folder's gate shuts first: nothing still running writes there again.
         OfflineFile.remove(id)
         onChange?()
@@ -180,8 +187,9 @@ public final class AgentConnections {
         // Signed out: nothing is read or kept until it signs in again.
         if signedOut(id) { return nil }
         if let engine = engines[id] { return engine }
-        guard let client = agentClient(for: id) else { return nil }
-        let engine = SyncEngine(client: client, directory: OfflineFile.directory(for: id), cloud: HappyCloud.isCloud(server(for: id)), streamHold: streamHold)
+        guard let client = agentClient(for: id, startup: activeID == id ? startup : nil) else { return nil }
+        let engine = SyncEngine(client: client, directory: OfflineFile.directory(for: id), cloud: HappyCloud.isCloud(server(for: id)), streamHold: streamHold,
+                                heard: { [weak self] news in await self?.heard(news, from: id) })
         engines[id] = engine
         if foreground && activeID == id {
             Task { await engine.start() }
@@ -189,6 +197,42 @@ public final class AgentConnections {
         }
         return engine
     }
+    /// The open account's name, picture, health and revocation, as its
+    /// engine hears them: no identity check of its own while it runs
+    /// (`identifiedByEngine`). The picture's bytes are read only when its
+    /// ThumbHash changed, on a file client over the engine's tunnels.
+    private func heard(_ news: SyncEngine.Heard, from id: String) async {
+        guard let account = accounts.first(where: { $0.id == id }), !account.revoked else { return }
+        let generation = generation
+        switch news {
+        case .revoked:
+            await stop(id)
+            var revoked = account
+            revoked.revoked = true; revoked.status = .revoked
+            await apply(revoked, generation: generation, issue: PairingError.revoked)
+        case .verified(let computer):
+            do {
+                var (updated, readsAvatar) = try AgentIdentity.take(computer, into: account)
+                await apply(updated, generation: generation)
+                if readsAvatar, let credential = credentials[id], let engine = engines[id], let transport = await runningTransport(id) {
+                    // The picture's bytes wait for the chat on screen's read.
+                    await engine.client.chatReads.landed()
+                    updated = try await AgentIdentity.avatar(updated, transport: transport, token: credential.deviceToken)
+                    await apply(updated, generation: generation)
+                }
+            } catch {
+                var failed = account
+                failed.status = .retrying
+                await apply(failed, generation: generation, issue: error)
+            }
+        }
+    }
+
+    /// Whether `id`'s name, picture and health come from its engine's
+    /// bootstrap: the open account's while in the foreground. Its own
+    /// check went out beside the engine's first reads on every return.
+    private func identifiedByEngine(_ id: String) -> Bool { foreground && activeID == id && engines[id] != nil }
+
     func credential(for id: String) -> AgentConnectionCredentials? { credentials[id] }
     /// What the connection's placeholder picture is picked by: its
     /// computer's address, the same on every phone paired with it.
@@ -210,7 +254,14 @@ public final class AgentConnections {
         for account in accounts where account.revoked && credentials[account.id]?.signIn?.grant.refreshToken != nil {
             await sessionEnded(account.id)
         }
+        keepStartup()
         onChange?(); startConnections()
+    }
+
+    /// Only the engine of the open connection, in the foreground, takes
+    /// the launch's tunnel; with any other, or none, it goes.
+    func keepStartup() {
+        startup?.keep(foreground ? accounts.first { $0.id == activeID && !$0.revoked }?.id : nil)
     }
 
     public func add(_ value: AgentConnectionCredentials, name: String) async throws -> AgentConnection {
@@ -276,7 +327,7 @@ public final class AgentConnections {
         if !loaded { try await restore() }
         if let id, !accounts.contains(where: { $0.id == id }) { throw AccountSwitchError.unknownAccount }
         try await storage.select(id)
-        activeID = id; onChange?()
+        activeID = id; keepStartup(); onChange?()
         for (accountID, engine) in engines {
             if foreground && accountID == id { await resume(accountID, engine) }
             else { await engine.pause() }
@@ -327,6 +378,7 @@ public final class AgentConnections {
         // What V2 kept to open on it offline goes with it.
         OfflineFile.remove(id)
         if activeID == id { activeID = nil }
+        keepStartup()
         onChange?()
     }
 
@@ -369,6 +421,7 @@ public final class AgentConnections {
         meters.removeValue(forKey: id)
         accounts.removeAll { $0.id == id }
         if activeID == id { activeID = nil }
+        keepStartup()
         onChange?()
         return Teardown(id: id, job: job, engine: engine)
     }
@@ -397,6 +450,7 @@ public final class AgentConnections {
     func open(_ id: String?) {
         guard id.map({ id in accounts.contains { $0.id == id } }) ?? true else { return }
         activeID = id
+        keepStartup()
         onChange?()
         selecting = Task { [previous = selecting] in
             await previous?.value
@@ -411,6 +465,7 @@ public final class AgentConnections {
 
     public func setForeground(_ active: Bool) async {
         foreground = active; generation &+= 1
+        keepStartup()
         if active { networkForegrounded() }
         if !active { suspended = Set(engines.keys) }
         let pending = jobs; jobs.removeAll()
@@ -425,7 +480,14 @@ public final class AgentConnections {
         // of them waits on the open engine's wake, nor it on them.
         if active { startConnections() }
         let open = active ? activeID.flatMap { id in engines[id].map { (id, $0) } } : nil
-        if case let (id, engine)? = open { await resume(id, engine) }
+        if case let (id, engine)? = open {
+            // Connecting until its engine's bootstrap says otherwise, as its own check said.
+            if var account = accounts.first(where: { $0.id == id }), account.status == .paused {
+                account.status = .connecting
+                await apply(account, generation: generation)
+            }
+            await resume(id, engine)
+        }
         for (id, engine) in engines where id != open?.0 {
             guard foreground == active else { return }
             if !active && id == activeID { await engine.background() }
@@ -507,9 +569,17 @@ public final class AgentConnections {
                 defer { picture?.cancel() }
                 while !Task.isCancelled {
                     do {
-                        current.status = attempt == 0 ? .connecting : .retrying
-                        await self?.apply(current, generation: generation)
+                        if await self?.identifiedByEngine(account.id) != true {
+                            current.status = attempt == 0 ? .connecting : .retrying
+                            await self?.apply(current, generation: generation)
+                        }
                         while !Task.isCancelled {
+                            if await self?.identifiedByEngine(account.id) == true {
+                                try await RadioWake.shared.next(after: interval * 9 / 10, by: interval)
+                                continue
+                            }
+                            // What the engine took in meanwhile, its picture's ETag included.
+                            current = await self?.accounts.first { $0.id == account.id } ?? current
                             // Over the running engine's tunnels when there are
                             // some; else a transport per check, closed after it:
                             // its tunnels don't idle on the radio until the next one.
@@ -563,6 +633,7 @@ public final class AgentConnections {
         if account.thumbhash != nil { account.avatar = previous.avatar; account.avatarETag = previous.avatarETag }
         guard previous != account else { return }
         accounts[index] = account
+        if account.revoked { keepStartup() }
         onChange?()
         // Status is transient. Persist identity and permanent revocation only.
         if previous.name != account.name || previous.avatar != account.avatar || previous.avatarETag != account.avatarETag || previous.thumbhash != account.thumbhash || previous.revoked != account.revoked {

@@ -29,7 +29,8 @@ import java.util.concurrent.atomic.AtomicInteger
  * The in-app browser's proxy (iOS's `BrowserProxy`, docs/browser-proxy.md):
  * one authenticated listener on 127.0.0.1 that every in-app web page and
  * picture fetch goes through, so they use the computer's network and never
- * the phone's.
+ * the phone's, except past the loopback of a network that carries only its
+ * loopback ([BrowserDestinations]).
  *
  * Android's WebView takes one proxy for the whole app (`ProxyController`),
  * where WebKit takes one per page, so one listener serves every open
@@ -119,6 +120,27 @@ class BrowserProxy(parent: CoroutineScope) {
             }
         }
 
+        /**
+         * The network refused a destination past its loopback
+         * (`403 destination_not_allowed`) though its lookup didn't say so:
+         * from now on the phone dials everything past it.
+         */
+        @Volatile private var refusedOutside = false
+
+        /** A stream to [authority]: through [network]'s tunnel, or from the phone where it carries only its loopback. */
+        internal suspend fun dial(network: BrowserNetwork, authority: BrowserPolicy.Authority): TransportSocket {
+            val destinations = if (refusedOutside) BrowserDestinations.Loopback else network.destinations
+            if (!destinations.tunnels(authority)) return BrowserDirect.open(authority)
+            return try {
+                BrowserTunnel.open(scope.client, network, authority)
+            } catch (e: BrowserException) {
+                // A loopback port it refuses (a reserved one) is never dialed from the phone.
+                if (e.kind != BrowserException.Kind.OutsideNetwork || BrowserDestinations.isLoopback(authority)) throw e
+                refusedOutside = true
+                BrowserDirect.open(authority)
+            }
+        }
+
         fun close() {
             remove(this)
             pool.stop()
@@ -180,7 +202,7 @@ class BrowserProxy(parent: CoroutineScope) {
                 }
                 jobs.incrementAndGet()
                 launch {
-                    val local = LocalSocket(connection)
+                    val local = PageConnection(LocalSocket(connection), this)
                     try {
                         serve(local)
                     } catch (_: Exception) {
@@ -229,59 +251,83 @@ class BrowserProxy(parent: CoroutineScope) {
         } ?: fallback
     }
 
-    private suspend fun serve(local: TransportSocket) {
+    private suspend fun serve(local: PageConnection) {
         var started = false
         var refused: Pair<Page, BrowserPolicy.Authority>? = null
+        // Plain http's tunnel, kept while the page's connection asks the same host again.
+        var kept: Pair<BrowserPolicy.Authority, TransportSocket>? = null
         try {
-            val (head, rest) = BrowserRelay.head(local)
+            var (head, rest) = BrowserRelay.head(local)
             val page = authenticate(head)
             if (page == null) {
                 local.write(PROXY_AUTH_REQUIRED)
                 return
             }
-            val parts = head.line.split(' ')
-            if (parts.size != 3 || parts[2] != "HTTP/1.1" || !parts[0].all { it in 'A'..'Z' }) throw BrowserException(BrowserException.Kind.Malformed)
-            if (parts[0] == "CONNECT") {
-                val authority = BrowserPolicy.Authority.parse(parts[1]) ?: throw BrowserException(BrowserException.Kind.Forbidden)
-                val owner = owner(authority, page)
-                refused = owner to authority
-                when (val scope = owner.scope) {
-                    is Scope.Artifact if scope.authority == authority -> {
-                        local.write(ESTABLISHED)
-                        // CONNECT cannot already carry an HTTP request.
-                        if (rest.isNotEmpty()) throw BrowserException(BrowserException.Kind.Malformed)
-                        val (inner, body) = BrowserRelay.head(local)
-                        BrowserPolicy.checkArtifactOrigin(inner, authority)
-                        artifact(local, owner.pool, scope.id, scope.version, inner, body, scope.vault) { started = true }
-                    }
-                    else -> {
-                        val network = owner.network()
-                        val remote = upstream { BrowserTunnel.open(owner.scope.client, network, authority) }
-                        try {
+            while (true) {
+                val parts = head.line.split(' ')
+                if (parts.size != 3 || parts[2] != "HTTP/1.1" || !parts[0].all { it in 'A'..'Z' }) throw BrowserException(BrowserException.Kind.Malformed)
+                if (parts[0] == "CONNECT") {
+                    val authority = BrowserPolicy.Authority.parse(parts[1]) ?: throw BrowserException(BrowserException.Kind.Forbidden)
+                    val owner = owner(authority, page)
+                    refused = owner to authority
+                    when (val scope = owner.scope) {
+                        is Scope.Artifact if scope.authority == authority -> {
                             local.write(ESTABLISHED)
-                            started = true
-                            if (rest.isNotEmpty()) remote.write(rest)
-                            BrowserRelay.duplex(local, remote)
-                        } finally {
-                            remote.close()
+                            // CONNECT cannot already carry an HTTP request.
+                            if (rest.isNotEmpty()) throw BrowserException(BrowserException.Kind.Malformed)
+                            val (inner, body) = BrowserRelay.head(local)
+                            BrowserPolicy.checkArtifactOrigin(inner, authority)
+                            artifact(local, owner.pool, scope.id, scope.version, inner, body, scope.vault) { started = true }
+                        }
+                        else -> {
+                            val network = owner.network()
+                            val remote = upstream { owner.dial(network, authority) }
+                            try {
+                                local.write(ESTABLISHED)
+                                started = true
+                                if (rest.isNotEmpty()) remote.write(rest)
+                                BrowserRelay.duplex(local, remote)
+                            } finally {
+                                remote.close()
+                            }
                         }
                     }
+                    return
                 }
-                return
-            }
-            // Absolute form: Chromium's plain http through a proxy.
-            val uri = runCatching { URI(parts[1]) }.getOrNull()
-            if (uri?.scheme?.lowercase() != "http") throw BrowserException(BrowserException.Kind.Malformed)
-            val authority = BrowserPolicy.Authority.of(parts[1]) ?: throw BrowserException(BrowserException.Kind.Forbidden)
-            val target = (uri.rawPath?.takeIf { it.isNotEmpty() } ?: "/") + (uri.rawQuery?.let { "?$it" } ?: "")
-            val inner = HttpHead("${parts[0]} $target HTTP/1.1", head.without("proxy-authorization", "proxy-connection").fields)
-            val owner = owner(authority, page)
-            when (val scope = owner.scope) {
-                is Scope.Artifact if scope.authority == authority -> {
-                    BrowserPolicy.checkArtifactOrigin(inner, authority)
-                    artifact(local, owner.pool, scope.id, scope.version, inner, rest, scope.vault) { started = true }
+                // Absolute form: Chromium's plain http through a proxy.
+                val uri = runCatching { URI(parts[1]) }.getOrNull()
+                if (uri?.scheme?.lowercase() != "http") throw BrowserException(BrowserException.Kind.Malformed)
+                val authority = BrowserPolicy.Authority.of(parts[1]) ?: throw BrowserException(BrowserException.Kind.Forbidden)
+                val target = (uri.rawPath?.takeIf { it.isNotEmpty() } ?: "/") + (uri.rawQuery?.let { "?$it" } ?: "")
+                val inner = HttpHead("${parts[0]} $target HTTP/1.1", head.without("proxy-authorization", "proxy-connection").fields)
+                val owner = owner(authority, page)
+                when (val scope = owner.scope) {
+                    is Scope.Artifact if scope.authority == authority -> {
+                        BrowserPolicy.checkArtifactOrigin(inner, authority)
+                        artifact(local, owner.pool, scope.id, scope.version, inner, rest, scope.vault) { started = true }
+                        return
+                    }
+                    else -> {
+                        val reused = kept?.takeIf { it.first == authority }?.second
+                        if (reused == null) {
+                            kept?.second?.close()
+                            kept = null
+                        }
+                        val network = owner.network()
+                        val (remote, next) = forward(local, reused, { owner.dial(network, authority) }, inner, rest) { started = true }
+                        kept = remote?.let { authority to it }
+                        // Another request on the page's connection, which may go on the same tunnel.
+                        remote ?: return
+                        val following = try {
+                            BrowserRelay.head(local, next)
+                        } catch (e: BrowserException) {
+                            return
+                        }
+                        head = following.first
+                        rest = following.second
+                        started = false
+                    }
                 }
-                else -> forward(local, owner.scope.client, owner.network(), authority, inner, rest) { started = true }
             }
         } catch (e: CancellationException) {
             throw e
@@ -292,7 +338,12 @@ class BrowserProxy(parent: CoroutineScope) {
             if (!started) {
                 refused?.let { (owner, authority) -> owner.refusals.record(BrowserProxyRefusal(failure.status, failure.code), authority) }
                 runCatching { local.write(failure.bytes) }
+            } else if (e is BrowserException && e.kind == BrowserException.Kind.ComputeGone) {
+                // An open tunnel (a dev server's socket) closed for the compute: told, never answered.
+                refused?.let { (owner, authority) -> owner.refusals.record(BrowserProxyRefusal(failure.status, failure.code), authority) }
             }
+        } finally {
+            kept?.second?.close()
         }
     }
 
@@ -431,24 +482,86 @@ class BrowserProxy(parent: CoroutineScope) {
     }
 
     /**
-     * A plain-http request through [network]: sent to the target in
-     * origin form, closed after its answer, the answer relayed unchanged
-     * but for its connection fields.
+     * A plain-http request, sent to the target in origin form, its answer
+     * relayed unchanged but for its connection fields. Chromium keeps its
+     * connection to a proxy for the next request, so a framed answer leaves
+     * the tunnel open for it: on Happy Cloud every tunnel is a session the
+     * person has only a few of. [reused] is such a tunnel; one the target
+     * closed while it sat idle is replaced by a fresh one from [open] when
+     * nothing of the answer came yet. Returns the tunnel when it may carry
+     * another request, with whatever of that request already arrived;
+     * a null tunnel was closed.
      */
     private suspend fun forward(
-        local: TransportSocket,
-        client: AgentClient,
-        network: BrowserNetwork,
-        authority: BrowserPolicy.Authority,
+        local: PageConnection,
+        reused: TransportSocket?,
+        open: suspend () -> TransportSocket,
         head: HttpHead,
         initial: ByteArray,
         onStarted: () -> Unit,
-    ) {
-        val remote = upstream { BrowserTunnel.open(client, network, authority) }
+    ): Pair<TransportSocket?, ByteArray> {
+        val upgrade = head.value("upgrade") != null
+        val length = head.value("content-length")?.takeIf { it.isNotEmpty() && it.all(Char::isDigit) }?.toLongOrNull()
+        val framed = head.value("transfer-encoding") == null && (length ?: 0L) <= BrowserRelay.BODY_LIMIT
+        val closes = upgrade || !framed || head.fields.any { it.first.equals("connection", true) && it.second.lowercase().split(',').any { v -> v.trim() == "close" } }
+        val request = head.without("connection", "keep-alive", "proxy-connection", "proxy-authorization", "x-happy-proxy-route")
+        if (closes) {
+            reused?.close()
+            closing(local, upstream { open() }, request.copy(fields = request.fields + ("Connection" to if (upgrade) "Upgrade" else "close")), initial, onStarted)
+            return null to ByteArray(0)
+        }
+        // A framed body is read whole first (the artifact API's bound), so a
+        // request on a tunnel the target let go of can be sent again.
+        val (sent, body) = BrowserRelay.requestBody(request, initial, local)
+        val bytes = sent.copy(fields = sent.fields + ("Connection" to "keep-alive")).bytes + body
+        var remote = reused ?: upstream { open() }
+        var answer = try {
+            remote.write(bytes)
+            targetHead(remote)
+        } catch (e: CancellationException) {
+            remote.close()
+            throw e
+        } catch (e: Exception) {
+            remote.close()
+            if (reused == null) throw BrowserUpstreamException(e)
+            remote = upstream { open() }
+            try {
+                upstream { remote.write(bytes) }
+                upstream { targetHead(remote) }
+            } catch (e: Exception) {
+                remote.close()
+                throw e
+            }
+        }
         try {
-            val upgrade = head.value("upgrade") != null
-            val request = head.without("connection", "keep-alive", "proxy-connection", "proxy-authorization", "x-happy-proxy-route")
-            remote.write(request.copy(fields = request.fields + ("Connection" to if (upgrade) "Upgrade" else "close")).bytes)
+            val method = head.line.substringBefore(' ')
+            var interim = 0
+            while ((answer.first.status ?: 0) in 100..199) {
+                if (answer.first.status == 101 || ++interim > 8) throw BrowserUpstreamException(BrowserException(BrowserException.Kind.Malformed))
+                onStarted()
+                local.write(answer.first.bytes)
+                answer = upstream { BrowserRelay.head(remote, answer.second) }
+            }
+            val (response, rest) = answer
+            val framing = upstream { BrowserResponseBody(response, method) }
+            onStarted()
+            local.write((if (framing.permitsReuse) HttpHead(response.line, response.without("connection", "keep-alive", "proxy-connection").fields) else response.closedResponse()).bytes)
+            val next = relayKeeping(remote, local, framing, rest)
+            if (next == null || !framing.reusable) {
+                remote.close()
+                return null to ByteArray(0)
+            }
+            return remote to next
+        } catch (e: Throwable) {
+            remote.close()
+            throw e
+        }
+    }
+
+    /** A request whose connection ends with its answer: an upgrade, a body of no or too great a length, or a page that said close. */
+    private suspend fun closing(local: TransportSocket, remote: TransportSocket, request: HttpHead, initial: ByteArray, onStarted: () -> Unit) {
+        try {
+            remote.write(request.bytes)
             if (initial.isNotEmpty()) remote.write(initial)
             coroutineScope {
                 // The rest of a request body follows as the page sends it.
@@ -460,7 +573,7 @@ class BrowserProxy(parent: CoroutineScope) {
                     } catch (_: Exception) {
                     }
                 }
-                val (response, bytes) = upstream { BrowserRelay.head(remote) }
+                val (response, bytes) = upstream { targetHead(remote) }
                 onStarted()
                 local.write(response.closedResponse().bytes)
                 if (bytes.isNotEmpty()) local.write(bytes)
@@ -475,6 +588,58 @@ class BrowserProxy(parent: CoroutineScope) {
         } finally {
             remote.close()
         }
+    }
+
+    /**
+     * [relay] for a page connection that stays open: the answer goes to
+     * the page by its framing, and a page that goes away stops it (an
+     * EventSource with nothing to send). Returns what the page sent after
+     * its request, the start of its next one, once the answer ended where
+     * its framing said; null when either side ended first.
+     */
+    private suspend fun relayKeeping(remote: TransportSocket, local: PageConnection, framing: BrowserResponseBody, initial: ByteArray): ByteArray? = coroutineScope {
+        val done = CompletableDeferred<Boolean>()
+        val relay = launch {
+            try {
+                upstream { framing.append(initial) }
+                if (initial.isNotEmpty()) local.write(initial)
+                while (!framing.finished) {
+                    val data = upstream { remote.read(65536) }
+                    if (data.isEmpty()) {
+                        upstream { framing.end() }
+                        done.complete(false)
+                        return@launch
+                    }
+                    upstream { framing.append(data) }
+                    local.write(data)
+                }
+                done.complete(true)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                done.completeExceptionally(e)
+            }
+        }
+        // Chromium never pipelines: input before the answer ends is the page going away.
+        val watch = launch { if (!local.input()) done.complete(false) }
+        val complete = try {
+            done.await()
+        } finally {
+            relay.cancel()
+            watch.cancel()
+        }
+        if (complete) ByteArray(0) else null
+    }
+
+    /**
+     * The target's answer to a request on an open tunnel. A tunnel that
+     * ends before one (Happy Cloud's twin to a port nothing listens on
+     * opens, then ends) is a server that didn't answer, not the computer.
+     */
+    private suspend fun targetHead(remote: TransportSocket): Pair<HttpHead, ByteArray> = try {
+        BrowserRelay.head(remote)
+    } catch (e: BrowserException) {
+        throw if (e.kind == BrowserException.Kind.Unavailable) BrowserException(BrowserException.Kind.Malformed) else e
     }
 
     private suspend fun <T> upstream(block: suspend () -> T): T = try {
@@ -529,13 +694,16 @@ data class BrowserFailure(val status: Int, val reason: String, val code: String)
 
         fun of(error: Throwable): BrowserFailure {
             if (error is BrowserUpstreamException) {
-                val cause = error.cause
+                // Coroutines' stack trace recovery (assertions on, as in tests) may wrap it in a copy of itself.
+                val cause = generateSequence(error.cause) { it.cause }.firstOrNull { it !is BrowserUpstreamException }
                 return when {
                     cause is BrowserException && cause.kind == BrowserException.Kind.Timeout -> failure(504, "Gateway Timeout", "upstream_timeout")
                     cause is BrowserException && cause.kind == BrowserException.Kind.LiveUnavailable -> failure(503, "Service Unavailable", "live_unavailable")
+                    cause is BrowserException && cause.kind == BrowserException.Kind.ComputeGone -> failure(503, "Service Unavailable", "compute_gone")
+                    cause is BrowserException && cause.kind == BrowserException.Kind.Forbidden -> failure(403, "Forbidden", "forbidden")
                     cause is BrowserException && (cause.kind == BrowserException.Kind.Malformed || cause.kind == BrowserException.Kind.TooLarge) ->
                         failure(502, "Bad Gateway", "upstream_response_invalid")
-                    cause is BrowserException && cause.kind == BrowserException.Kind.Upstream && cause.status in 400..599 ->
+                    cause is BrowserException && (cause.kind == BrowserException.Kind.Upstream || cause.kind == BrowserException.Kind.OutsideNetwork) && cause.status in 400..599 ->
                         failure(cause.status, "Upstream Refused", "upstream_refused")
                     atCapacity(cause) -> failure(503, "Service Unavailable", "upstream_capacity")
                     else -> failure(502, "Bad Gateway", "upstream_transport")
@@ -549,8 +717,9 @@ data class BrowserFailure(val status: Int, val reason: String, val code: String)
                     BrowserException.Kind.TooLarge -> failure(413, "Content Too Large", "request_too_large")
                     BrowserException.Kind.Unavailable -> failure(503, "Service Unavailable", "route_unavailable")
                     BrowserException.Kind.LiveUnavailable -> failure(503, "Service Unavailable", "live_unavailable")
+                    BrowserException.Kind.ComputeGone -> failure(503, "Service Unavailable", "compute_gone")
                     BrowserException.Kind.Timeout -> failure(408, "Request Timeout", "request_timeout")
-                    BrowserException.Kind.Upstream ->
+                    BrowserException.Kind.Upstream, BrowserException.Kind.OutsideNetwork ->
                         if (error.status in 400..599) failure(error.status, "Upstream Refused", "upstream_refused") else failure(502, "Bad Gateway", "upstream_transport")
                 }
             }

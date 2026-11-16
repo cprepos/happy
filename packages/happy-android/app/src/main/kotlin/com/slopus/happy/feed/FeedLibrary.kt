@@ -11,6 +11,7 @@ import com.slopus.happy.chat.num
 import com.slopus.happy.chat.str
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -157,22 +158,41 @@ class FeedLibrary(
     }
 
     /** The bootstrap was read: its `feedUnread` (null from a daemon without a feed), as of its event [cursor]. */
-    fun bootstrap(unread: Int?, cursor: String?) {
+    fun bootstrap(unread: Int?, cursor: String?, capabilities: FeedCapabilities? = null): Job =
         scope.launch {
             lock.withLock {
+                if (capabilities != null) {
+                    capable = capabilities.feed
+                    filtering = capabilities.subjectFilter
+                    if (!capabilities.subjectFilter) highlights.clear()
+                }
                 counted = unread != null
                 if (unread != null) setUnread(unread, cursor)
                 settle()
                 commit()
+                readInitialLocked()
             }
+        }
+
+    /** The stream's hello allows screen reads; later connects' automatic refresh stays in [connected]. */
+    fun hello(): Job = scope.launch {
+        lock.withLock {
+            live = true
+            readInitialLocked()
         }
     }
 
+    /** First launch needs a page once both conditions hold, whichever arrived last. */
+    private fun readInitialLocked() {
+        // Publish the read job before another hello/bootstrap can make the same decision.
+        if (live && stateFlow.value.available == true && !stateFlow.value.loaded && reading?.isActive != true) refresh()
+    }
+
     /** The event stream opened: health says whether there is a feed and whether it filters, and the newest page is read. */
-    fun connected() {
+    fun connected(): Job {
         live = true
         connecting?.cancel()
-        connecting = scope.launch {
+        return scope.launch {
             val capabilities = try {
                 routes.capabilities()
             } catch (e: CancellationException) {
@@ -189,8 +209,8 @@ class FeedLibrary(
                 settle()
                 commit()
             }
-            if (stateFlow.value.available == true) refresh()
-        }
+            if (stateFlow.value.available == true) refresh()?.join()
+        }.also { connecting = it }
     }
 
     /** The stream went away: reads under way stop. */
@@ -246,20 +266,20 @@ class FeedLibrary(
      * daemon that filters read their own page too. One under way is
      * followed by one more.
      */
-    fun refresh() {
-        if (stateFlow.value.available != true) return
+    fun refresh(): Job? {
+        if (stateFlow.value.available != true) return null
         if (reading?.isActive == true) {
             again = true
-            return
+            return reading
         }
-        reading = scope.launch {
+        return scope.launch(start = CoroutineStart.LAZY) {
             do {
                 again = false
                 stateFlow.value = stateFlow.value.copy(refreshing = true)
                 if (readFirst(everything) && stateFlow.value.filter == FeedFilter.Highlights && filtering == true) readFirst(highlights)
                 stateFlow.value = stateFlow.value.copy(refreshing = false)
             } while (again)
-        }
+        }.also { reading = it; it.start() }
     }
 
     /** [lane]'s newest page, laid over what it holds; false when it couldn't be read. */

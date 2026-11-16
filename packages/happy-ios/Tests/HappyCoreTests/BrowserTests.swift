@@ -1,5 +1,6 @@
 import Foundation
 @testable import HappyCore
+import Network
 import XCTest
 
 final class BrowserTests: XCTestCase {
@@ -37,6 +38,26 @@ final class BrowserTests: XCTestCase {
         let runnerOnly = AgentClient(transport: RoutingTransport(responses: ["/v0/workspaces": #"{"workspaces":[{"id":"runnerworkspace","status":"active","compute":{"type":"host","runnerId":"runner1"}}]}"#]), token: "test")
         do { _ = try await runnerOnly.browserWorkspace(); XCTFail("must not silently use a runner as the host fallback") }
         catch { XCTAssertEqual(error as? BrowserError, .unavailable) }
+    }
+
+    func testAChatOpensInItsAgentsNetworkAndAnOlderComputerInTheWorkspace() async throws {
+        let client = AgentClient(transport: RoutingTransport(responses: [
+            "/v0/agents/chat1": #"{"agent":{"id":"chat1","workspaceId":"botworkspace","status":"idle"}}"#,
+            "/v0/workspaces/botworkspace/agents/chat1/proxy": #"{"networkId":"c-chat1_env2"}"#,
+        ]), token: "test")
+        let network = try await client.agentNetwork("chat1")
+        XCTAssertEqual(network, .network("c-chat1_env2"))
+        XCTAssertEqual(network.path, "/v0/networks/c-chat1_env2/proxy")
+        // A daemon without the agent network route has only the workspace's.
+        let older = AgentClient(transport: RoutingTransport(responses: ["/v0/agents/chat1": #"{"agent":{"id":"chat1","workspaceId":"hostworkspace","status":"idle"}}"#]), token: "test")
+        let fallback = try await older.agentNetwork("chat1")
+        XCTAssertEqual(fallback, .workspace("hostworkspace"))
+        // A server signed in to has no workspace proxy: no network named is none at all.
+        let server = AgentClient(transport: RoutingTransport(responses: ["/v0/agents/chat1": #"{"agent":{"id":"chat1","workspaceId":"teamworkspace","status":"idle"}}"#]), token: "test", signsIn: true)
+        do { _ = try await server.agentNetwork("chat1"); XCTFail("fell back to the workspace's proxy") }
+        catch { XCTAssertEqual(error as? BrowserError, .unavailable) }
+        for id in ["", "-a", "Host", "a/b", "a..b", String(repeating: "a", count: 129)] { XCTAssertNil(BrowserNetwork.network(id).path, id) }
+        XCTAssertNotNil(BrowserNetwork.network("host").path)
     }
 
     func testArtifactBoundaryAndQueryArePreserved() throws {
@@ -177,6 +198,106 @@ final class BrowserTests: XCTestCase {
         XCTAssertEqual(BrowserProxyRefusal(status: failure.status, code: failure.code).problem, .liveUnavailable)
     }
 
+    func testANetworkThatCarriesOnlyItsLoopbackLeavesTheRestToThePhone() async throws {
+        func authority(_ url: String) -> BrowserPolicy.Authority { BrowserPolicy.Authority(url: URL(string: url)!)! }
+        let loopback = ["http://localhost:5173", "http://app.localhost:3000", "http://127.0.0.1:5173", "http://127.8.9.10", "http://[::1]:5173",
+                        "http://ipv4.happy-loopback.invalid:5173", "http://name.happy-loopback.invalid:3000"]
+        let outside = ["https://fonts.googleapis.com", "http://192.168.1.10:5173", "http://10.0.0.1", "http://localhost.example.com",
+                       "http://128.0.0.1", "http://[::2]", "https://example.com:8443"]
+        for url in loopback {
+            XCTAssertTrue(BrowserDestinations.loopback.tunnels(authority(url)), url)
+            XCTAssertTrue(BrowserDestinations.all.tunnels(authority(url)), url)
+        }
+        for url in outside {
+            XCTAssertFalse(BrowserDestinations.loopback.tunnels(authority(url)), url)
+            // Absent, as on a computer: the computer reaches everything.
+            XCTAssertTrue(BrowserDestinations.all.tunnels(authority(url)), url)
+        }
+        XCTAssertEqual(BrowserDestinations("loopback"), .loopback)
+        XCTAssertEqual(BrowserDestinations(nil), .all)
+        XCTAssertEqual(BrowserDestinations("anything"), .all)
+
+        // The lookup's marker reaches the page's network.
+        let cloud = AgentClient(transport: RoutingTransport(responses: [
+            "/v0/agents/chat1": #"{"agent":{"id":"chat1","workspaceId":"w1","status":"idle"}}"#,
+            "/v0/workspaces/w1/agents/chat1/proxy": #"{"networkId":"c-chat1","kind":"runner","destinations":"loopback"}"#,
+        ]), token: "test")
+        let route = try await cloud.agentRoute("chat1")
+        XCTAssertEqual(route.network, .network("c-chat1"))
+        XCTAssertEqual(route.destinations, .loopback)
+        let network = BrowserAgentNetwork(client: cloud, agentID: "chat1")
+        let cdn = authority("https://cdn.example.com")
+        let tunnelsCDN = try await network.tunnels(cdn)
+        XCTAssertFalse(tunnelsCDN)
+        let tunnelsDev = try await network.tunnels(authority("http://localhost:5173"))
+        XCTAssertTrue(tunnelsDev)
+
+        // Without the marker, a refusal of the destination teaches it, and only past the loopback.
+        let plain = AgentClient(transport: RoutingTransport(responses: [
+            "/v0/agents/chat1": #"{"agent":{"id":"chat1","workspaceId":"w1","status":"idle"}}"#,
+            "/v0/workspaces/w1/agents/chat1/proxy": #"{"networkId":"c-chat1"}"#,
+        ]), token: "test")
+        let learning = BrowserAgentNetwork(client: plain, agentID: "chat1")
+        let before = try await learning.tunnels(cdn)
+        XCTAssertTrue(before)
+        let reservedPort = await learning.refused(authority("http://localhost:3128"))
+        XCTAssertFalse(reservedPort, "a refused loopback port is never dialed from the phone")
+        let learned = await learning.refused(cdn)
+        XCTAssertTrue(learned)
+        let after = try await learning.tunnels(cdn)
+        XCTAssertFalse(after)
+
+        // The nested CONNECT's refusal says which it is.
+        let body = Data(#"{"error":"Destination not allowed","code":"destination_not_allowed"}"#.utf8)
+        let refusing = AgentClient(transport: Transport(Bytes([Data("HTTP/1.1 200 OK\r\n\r\n".utf8), Data("HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\n\r\n".utf8), body])), token: "token")
+        do { _ = try await refusing.browserTunnel(.network("c-chat1"), target: cdn); XCTFail() }
+        catch { XCTAssertEqual(error as? BrowserError, .outsideNetwork) }
+        XCTAssertEqual(BrowserFailure(BrowserError.outsideNetwork).status, 403)
+
+        // The phone never dials itself: only the computer's loopback is the page's.
+        for host in ["0.0.0.0", "127.0.0.1", "::1", "::", "::ffff:127.0.0.1"] {
+            XCTAssertTrue(BrowserDirect.isPhone(NWEndpoint.Host(host)), host)
+        }
+        for host in ["93.184.215.14", "2606:2800:21f:cb07:6820:80da:af6b:8b2c", "example.com"] {
+            XCTAssertFalse(BrowserDirect.isPhone(NWEndpoint.Host(host)), host)
+        }
+        do { _ = try await BrowserDirect.open(authority("http://0.0.0.0:5173")); XCTFail() }
+        catch { XCTAssertEqual(error as? BrowserError, .forbidden) }
+    }
+
+    func testAStoppedComputesRefusalIsTheComputeGoneNotTheServer() async throws {
+        let target = try XCTUnwrap(BrowserPolicy.Authority(url: XCTUnwrap(URL(string: "http://localhost:5173"))))
+        func refusal(_ status: Int, _ code: String) -> [Data] {
+            let body = Data(#"{"error":"x","code":"\#(code)"}"#.utf8)
+            return [Data("HTTP/1.1 \(status) Refused\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\n\r\n".utf8), body]
+        }
+        // Happy Cloud answers the page's own CONNECT once the compute stopped,
+        let nested = AgentClient(transport: Transport(Bytes([Data("HTTP/1.1 200 OK\r\n\r\n".utf8)] + refusal(503, "compute_offline"))), token: "token")
+        do { _ = try await nested.browserTunnel(.network("c-chat1"), target: target); XCTFail() }
+        catch { XCTAssertEqual(error as? BrowserError, .computeGone) }
+        // and the network's own after its grace, or with no compute at all.
+        for (status, code) in [(503, "draining"), (409, "no_compute")] {
+            let outer = AgentClient(transport: Transport(Bytes(refusal(status, code))), token: "token")
+            do { _ = try await outer.browserTunnel(.network("c-chat1"), target: target); XCTFail() }
+            catch { XCTAssertEqual(error as? BrowserError, .computeGone, code) }
+        }
+        // A dev server that isn't running is still the server's answer.
+        let dead = AgentClient(transport: Transport(Bytes([Data("HTTP/1.1 200 OK\r\n\r\n".utf8)] + refusal(502, "proxy_target_unavailable"))), token: "token")
+        do { _ = try await dead.browserTunnel(.network("c-chat1"), target: target); XCTFail() }
+        catch { XCTAssertEqual(error as? BrowserError, .upstream(502)) }
+        // An agent with no compute names no network.
+        let detached = AgentClient(transport: RoutingTransport(responses: [
+            "/v0/agents/chat1": #"{"agent":{"id":"chat1","workspaceId":"botworkspace","status":"idle"}}"#,
+            "/v0/workspaces/botworkspace/agents/chat1/proxy": #"{"error":"No compute","code":"no_compute"}"#,
+        ], statuses: ["/v0/workspaces/botworkspace/agents/chat1/proxy": 409]), token: "test")
+        do { _ = try await detached.agentNetwork("chat1"); XCTFail() }
+        catch { XCTAssertEqual(error as? BrowserError, .computeGone) }
+        let failure = BrowserFailure(BrowserError.computeGone)
+        XCTAssertEqual(failure.code, BrowserProxyRefusal.computeGone)
+        XCTAssertEqual(BrowserProxyRefusal(status: failure.status, code: failure.code).problem, .computeDisconnected)
+        XCTAssertEqual(BrowserProblem.opening(BrowserError.computeGone, link: nil), .computeDisconnected)
+    }
+
     func testPublicAuthoritySurvivesMeteringForConnectAndArtifactUpgrade() async throws {
         let bytes = Bytes([Data("HTTP/1.1 200 OK\r\n\r\n".utf8), Data("HTTP/1.1 200 OK\r\n\r\n".utf8)], authority: "agent.example.com:8443")
         let metered = MeteredStream(bytes, metrics: ConnectionMetrics(), channel: .browser)
@@ -305,8 +426,9 @@ final class BrowserTests: XCTestCase {
     }
     private struct RoutingTransport: AgentTransport {
         let responses: [String: String]
+        var statuses: [String: Int] = [:]
         func request(method: String, path: String, credential: String, body: Data?, headers: [String: String]) async throws -> HTTP1Response {
-            HTTP1Response(status: responses[path] == nil ? 404 : 200, body: Data((responses[path] ?? "{}").utf8))
+            HTTP1Response(status: statuses[path] ?? (responses[path] == nil ? 404 : 200), body: Data((responses[path] ?? "{}").utf8))
         }
         func close() async {}
     }

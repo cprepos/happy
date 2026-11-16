@@ -37,17 +37,22 @@ extension TailcatHTTPTransport {
 }
 
 /// Where a page's tunnels open. A workspace's network is the one its
-/// workspace resolves to now. A live artifact's is the one it was made on
-/// (`live.networkId`), through `CONNECT /v0/artifacts/:id/proxy`, where the
-/// daemon checks every destination against the artifact's URL.
+/// workspace resolves to now. An agent's is the network its commands run
+/// in (its container, runner or this computer), named by a `networkId`
+/// and opened through `CONNECT /v0/networks/:id/proxy`. A live artifact's
+/// is the one it was made on (`live.networkId`), through
+/// `CONNECT /v0/artifacts/:id/proxy`, where the daemon checks every
+/// destination against the artifact's URL.
 public enum BrowserNetwork: Equatable, Sendable {
     case workspace(String)
+    case network(String)
     case artifact(String)
 
     /// The outer CONNECT's route; nil for an ID that isn't one.
     public var path: String? {
         switch self {
         case .workspace(let id): BrowserPolicy.validID(id) ? "/v0/workspaces/\(id)/proxy" : nil
+        case .network(let id): BrowserPolicy.validNetworkID(id) ? "/v0/networks/\(id)/proxy" : nil
         case .artifact(let id): BrowserPolicy.validID(id) ? "/v0/artifacts/\(id)/proxy" : nil
         }
     }
@@ -56,6 +61,31 @@ public enum BrowserNetwork: Equatable, Sendable {
     /// artifact is missing or not live, or its network isn't served (404);
     /// the network's machine opens no connections (501) or is away (503).
     public static let unavailable: Set<Int> = [404, 501, 503]
+}
+
+/// Which destinations a network's tunnels carry, as the agent's network
+/// lookup says (`destinations`): every one (absent, as on a computer), or
+/// only the computer's own loopback (`"loopback"`, Happy Cloud), when
+/// everything else is dialed from the phone. Decided by the host as
+/// written, never by resolving it: `localhost`, `*.localhost`,
+/// `127.0.0.0/8` and `::1` (and their aliases) are the loopback.
+public enum BrowserDestinations: Equatable, Sendable {
+    case all
+    case loopback
+
+    public init(_ value: String?) { self = value == "loopback" ? .loopback : .all }
+
+    /// Whether a tunnel carries `authority`; false means the phone dials it.
+    public func tunnels(_ authority: BrowserPolicy.Authority) -> Bool {
+        self == .all || Self.isLoopback(BrowserPolicy.Loopback.target(authority) ?? authority)
+    }
+
+    public static func isLoopback(_ authority: BrowserPolicy.Authority) -> Bool {
+        let host = authority.host
+        if host == "localhost" || host.hasSuffix(".localhost") || host == "::1" { return true }
+        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count == 4 && parts[0] == "127" && parts.allSatisfy { UInt8($0) != nil }
+    }
 }
 
 extension AgentClient {
@@ -99,6 +129,7 @@ extension AgentClient {
             await stream.close()
             if error is CancellationError { throw error }
             if case BrowserError.upstream = error { throw error }
+            if error as? BrowserError == .computeGone || error as? BrowserError == .outsideNetwork { throw error }
             throw BrowserProxyFailure.upstream(error)
         }
     }
@@ -117,9 +148,24 @@ extension AgentClient {
         if let credential { head += "Authorization: Bearer \(credential)\r\n" }
         try await stream.write(Data((head + "\r\n").utf8))
         let (response, rest) = try await BrowserRelay.head(stream)
-        guard response.line.split(separator: " ").dropFirst().first == "200", rest.isEmpty else {
-            throw BrowserError.upstream(Int(response.line.split(separator: " ").dropFirst().first ?? "") ?? 502)
+        let status = Int(response.line.split(separator: " ").dropFirst().first ?? "") ?? 502
+        guard status == 200, rest.isEmpty else {
+            // Happy Cloud answers a stopped compute's CONNECT with a JSON code.
+            var body = rest
+            if status != 200, let length = response.value("content-length").flatMap(Int.init), length <= 65536 {
+                while body.count < length, let bytes = try? await stream.read(maximumBytes: length - body.count), !bytes.isEmpty { body.append(bytes) }
+            }
+            if BrowserCompute.gone(status: status, body: body) { throw BrowserError.computeGone }
+            if status == 403, BrowserTunnel.code(body) == "destination_not_allowed" { throw BrowserError.outsideNetwork }
+            throw BrowserError.upstream(status)
         }
+    }
+}
+
+enum BrowserTunnel {
+    /// A refusal's JSON `code`, if its body has one.
+    static func code(_ body: Data) -> String? {
+        (try? JSONSerialization.jsonObject(with: body) as? [String: Any])?["code"] as? String
     }
 }
 

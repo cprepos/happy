@@ -36,7 +36,10 @@ import com.slopus.happy.ui.connection.rememberNetworkPath
 import com.slopus.happy.ui.conversation.linkState
 import com.slopus.happy.feed.FeedSubject
 import com.slopus.happy.browser.BrowserProxy
+import com.slopus.happy.browser.browserAgentCompute
 import com.slopus.happy.browser.browserNetwork
+import com.slopus.happy.browser.computeAnswers
+import com.slopus.happy.ui.browser.BrowserComputeWatch
 import com.slopus.happy.ui.browser.BrowserPage
 import com.slopus.happy.ui.browser.BrowserScreen
 import com.slopus.happy.ui.browser.openOutside
@@ -90,16 +93,7 @@ internal fun computerName(graph: AppGraph, connectionId: String): String {
 }
 
 private class ArtifactsHolder(session: AgentSession?) : ViewModel() {
-    val feed: ArtifactCatalogFeed? = session?.let {
-        val files = ArtifactClient(it.client)
-        ArtifactCatalogFeed(
-            scope = viewModelScope,
-            fetch = { cursor -> files.catalog(cursor) },
-            fetchOne = { id -> files.artifact(id) },
-            kept = { it.cachedResource(ArtifactCatalogFeed.RESOURCE) },
-            keep = { value -> it.keepResource(ArtifactCatalogFeed.RESOURCE, value) },
-        ).also { feed -> feed.start(it.events) }
-    }
+    val feed: ArtifactCatalogFeed? = session?.artifacts
     val thumbnails: ArtifactThumbnails? = session?.let { ArtifactThumbnails(ArtifactClient(it.client), viewModelScope) }
 }
 
@@ -108,6 +102,7 @@ private fun AgentArtifacts(graph: AppGraph, nav: NavHostController, route: Agent
     val session = remember(route.connectionId) { graph.agentSessions.session(route.connectionId) }
     val holder = viewModel { ArtifactsHolder(session) }
     val feed = holder.feed
+    LaunchedEffect(feed) { feed?.refresh() }
     val state = feed?.state?.collectAsStateWithLifecycle()?.value ?: ArtifactCatalogFeed.State(loaded = true, error = Problem.Unknown)
     val status = session?.status?.collectAsStateWithLifecycle()?.value
     val syncing = session?.isSyncing?.collectAsStateWithLifecycle()?.value ?: false
@@ -239,6 +234,11 @@ private fun BrowserEntry(graph: AppGraph, nav: NavHostController, route: Browser
         prepare = {
             val client = session?.client ?: throw IllegalStateException("no connection")
             BrowserPage(route.url, BrowserProxy.Scope.Web(client) { client.browserNetwork(agentId = route.agentId) })
+        },
+        // A chat's page follows its agent's compute.
+        compute = remember(session, route.agentId) {
+            val agentId = route.agentId?.takeIf { it.isNotEmpty() } ?: return@remember null
+            session?.let { BrowserComputeWatch(browserAgentCompute(it.client, it.events, agentId)) { url -> it.client.computeAnswers(agentId, url) } }
         },
         onBack = { nav.popBackStack() },
         onOpenElsewhere = { url ->

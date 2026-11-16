@@ -11,6 +11,12 @@ class BrowserException(val kind: Kind, val status: Int = 0) : Exception(kind.nam
 
         /** A live artifact's own proxy refused to open ([BrowserNetwork.unavailable]): the artifact is gone or not live, or its network isn't served. */
         LiveUnavailable,
+
+        /** The agent's compute is gone (detached, offline or draining): a tunnel refused with one of [BrowserCompute.gone]'s codes. */
+        ComputeGone,
+
+        /** A network that carries only its loopback refused a destination past it (`403 destination_not_allowed`): the phone dials it ([BrowserDestinations]). */
+        OutsideNetwork,
     }
 }
 
@@ -171,6 +177,10 @@ object BrowserPolicy {
         if (path == "/api" || path == "/") throw BrowserException(BrowserException.Kind.Forbidden)
         return "$prefix/versions/$version/files$target"
     }
+
+    /** A `networkId` (happy-agent API.md): 1 to 128 lowercase letters and digits, plus `-` and `_` after the first. Opaque: never parsed. */
+    fun validNetworkId(value: String): Boolean =
+        value.length in 1..128 && value[0].let { it in 'a'..'z' || it in '0'..'9' } && value.all { it in 'a'..'z' || it in '0'..'9' || it == '-' || it == '_' }
 
     /** API.md's identifiers: a lowercase letter, then lowercase letters and digits. */
     fun validId(value: String): Boolean = value.firstOrNull()?.let { it in 'a'..'z' } == true && value.all { it in 'a'..'z' || it in '0'..'9' }

@@ -132,6 +132,9 @@ public actor Store {
     /// (`SyncEngine.resetCarrier`): a read on its way dies with it, and is
     /// asked again without saying it failed.
     public private(set) var carrierResets = 0
+    /// A chat opened before its engine first asks for the stream is read
+    /// after it, and home's read waits for it (`ChatsFirst`).
+    public nonisolated let chatsFirst = ChatsFirst()
     private var placesDirty = false
     /// When the bots and tasks were last read (~0.8 MB on a busy
     /// computer), and what came meanwhile that their read could not follow.
@@ -410,17 +413,6 @@ public actor Store {
     private func read() async {
         sidebarReadSucceeded = false
         do {
-            // Spaces were removed from happy-agent (API.md): a daemon
-            // without `sidebarOperations` answers 404 there, so nothing of
-            // the sidebar document is asked before health says it exists.
-            let capabilities = (try? await client.health())?.capabilities ?? AgentWire.Health.Capabilities()
-            self.capabilities = capabilities
-            guard capabilities.sidebarOperations == true else {
-                snapshot.availability = .unsupported
-                heldEvents = nil
-                publish()
-                return
-            }
             async let sidebar = client.sidebar(widgets: true)
             async let bots = client.bots()
             async let tasks = client.tasks()
@@ -1281,4 +1273,84 @@ public actor Store {
 struct Lossy<T: Decodable>: Decodable {
     let value: T?
     init(from decoder: Decoder) throws { value = try? T(from: decoder) }
+}
+
+/// The chat on screen goes between the stream and home's bootstrap (sync
+/// order P0). Closed from its engine's first start until that engine asks
+/// for the stream: a chat opened meanwhile is read right after the ask,
+/// and the ask's home read waits until those chats have asked. A chat
+/// whose engine never started reads at once.
+public final class ChatsFirst: @unchecked Sendable {
+    private let lock = NSLock()
+    private var closed = false
+    private var used = false
+    private var ended = false
+    private var waitingForStream: [CheckedContinuation<Void, Never>] = []
+    private var asking = 0
+    private var waitingForChats: [CheckedContinuation<Void, Never>] = []
+
+    /// The engine starts, the first time.
+    public func close() { lock.withLock { if !used { used = true; closed = true } } }
+
+    /// A chat opening: true while closed, and then it says `asked` once
+    /// its read has gone, or it closed.
+    public func opening() -> Bool {
+        lock.withLock {
+            guard closed else { return false }
+            asking += 1
+            return true
+        }
+    }
+
+    public func asked() {
+        let waiters = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            asking -= 1
+            guard asking == 0 else { return [] }
+            defer { waitingForChats = [] }
+            return waitingForChats
+        }
+        for waiter in waiters { waiter.resume() }
+    }
+
+    /// A chat's read waits here while closed: false once its engine
+    /// stopped (signed out), when nothing is to be asked.
+    public func wait() async -> Bool {
+        await withCheckedContinuation { (waiter: CheckedContinuation<Void, Never>) in
+            let now = lock.withLock { () -> Bool in
+                if !closed || ended { return true }
+                waitingForStream.append(waiter)
+                return false
+            }
+            if now { waiter.resume() }
+        }
+        return lock.withLock { !ended }
+    }
+
+    /// The engine stopped: chats waiting, and any after, ask nothing.
+    public func end() {
+        lock.withLock { ended = true }
+        open()
+    }
+
+    /// The stream was asked for, or won't be: the chats waiting are read now.
+    public func open() {
+        let waiters = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            closed = false
+            defer { waitingForStream = [] }
+            return waitingForStream
+        }
+        for waiter in waiters { waiter.resume() }
+    }
+
+    /// Returns once the chats opened while closed have asked.
+    public func chatsAsked() async {
+        await withCheckedContinuation { (waiter: CheckedContinuation<Void, Never>) in
+            let now = lock.withLock { () -> Bool in
+                if asking == 0 { return true }
+                waitingForChats.append(waiter)
+                return false
+            }
+            if now { waiter.resume() }
+        }
+    }
 }

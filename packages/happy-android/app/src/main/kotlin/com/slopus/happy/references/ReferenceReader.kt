@@ -42,7 +42,7 @@ class ReferenceReader(
     events: Flow<AgentEvent>,
     /** `GET /v0/artifacts/:id`'s artifact. */
     private val readArtifact: suspend (String) -> JsonObject,
-    /** `GET /v0/users?ids=`: the names of at most 100 people, by ID. */
+    /** Names from the bootstrap team directory, by ID. */
     private val readUsers: suspend (List<String>) -> Map<String, String>,
     private val io: CoroutineContext = Dispatchers.IO,
     /** Where the readings are put together. */
@@ -192,15 +192,4 @@ class ReferenceReader(
         }
     }
 
-    companion object {
-        /** `GET /v0/users?ids=`: the names of [ids] (at most 100), by ID; "" for a person without one. */
-        suspend fun userNames(client: AgentClient, ids: List<String>): Map<String, String> {
-            if (ids.isEmpty()) return emptyMap()
-            val answer = client.decode<JsonObject>("GET", "/v0/users?ids=" + ids.take(100).joinToString(",", transform = AgentClient::escape))
-            return (answer["users"] as? JsonArray).orEmpty().mapNotNull { user ->
-                val o = user.obj ?: return@mapNotNull null
-                o["id"].str?.let { it to o["name"].str.orEmpty() }
-            }.toMap()
-        }
-    }
 }

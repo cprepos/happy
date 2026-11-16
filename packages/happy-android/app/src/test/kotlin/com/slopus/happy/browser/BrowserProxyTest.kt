@@ -89,7 +89,7 @@ class BrowserProxyTest {
                 val target = text.substringBefore("\r\n").split(' ')[1]
                 val keepAlive = text.contains("Connection: keep-alive")
                 // A live artifact's proxy, and the destinations it opens: localhost:4191 is its dev server.
-                if (text.startsWith("CONNECT /v0/artifacts/live1/proxy ") || text.startsWith("CONNECT localhost:4191 ") || text.startsWith("CONNECT cdn.example.com:80 ")) {
+                if (text.startsWith("CONNECT /v0/artifacts/live1/proxy ") || text.startsWith("CONNECT /v0/networks/host/proxy ") || text.startsWith("CONNECT localhost:4191 ") || text.startsWith("CONNECT cdn.example.com:80 ")) {
                     output.write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray())
                     output.flush()
                     continue
@@ -100,7 +100,33 @@ class BrowserProxyTest {
                     output.flush()
                     return
                 }
+                if (text.startsWith("CONNECT public.test:") || text.startsWith("CONNECT localhost:3128 ")) {
+                    // Happy Cloud's network carries only its loopback, and none of its reserved ports.
+                    val refusal = """{"error":"Destination not allowed","code":"destination_not_allowed"}"""
+                    output.write("HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: ${refusal.length}\r\n\r\n$refusal".toByteArray())
+                    output.flush()
+                    return
+                }
+                if (text.startsWith("CONNECT localhost:4193 ")) {
+                    output.write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray())
+                    output.flush()
+                    continue
+                }
+                // Happy Cloud's twin to a port nothing listens on: it opens, then ends.
+                if (text.contains("Host: localhost:4193")) return
+                if (text.startsWith("CONNECT localhost:4192 ")) {
+                    output.write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray())
+                    output.flush()
+                    continue
+                }
                 when {
+                    text.contains("Host: localhost:4192") -> {
+                        // A dev server that lets an idle keep-alive go after one answer, as Node does after five seconds.
+                        val answer = "once:$target"
+                        output.write("HTTP/1.1 200 OK\r\nContent-Length: ${answer.length}\r\n\r\n$answer".toByteArray())
+                        output.flush()
+                        return
+                    }
                     text.contains("Host: localhost:4191") || text.contains("Host: cdn.example.com") -> {
                         val answer = "site:$target"
                         output.write("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: ${answer.length}\r\n\r\n$answer".toByteArray())
@@ -135,6 +161,46 @@ class BrowserProxyTest {
         fun close() = server.close()
     }
 
+    /** A site the phone reaches itself, as `public.test` ([directs]): answers `phone:<target>`. */
+    private class Site {
+        val server = ServerSocket(0, 50, InetAddress.getLoopbackAddress())
+        val connections = AtomicInteger()
+        val url get() = "http://public.test:${server.localPort}"
+
+        init {
+            thread(isDaemon = true) {
+                while (true) {
+                    val socket = try {
+                        server.accept()
+                    } catch (_: Exception) {
+                        return@thread
+                    }
+                    connections.incrementAndGet()
+                    thread(isDaemon = true) {
+                        runCatching {
+                            socket.use {
+                                val input = it.getInputStream()
+                                while (true) {
+                                    val head = StringBuilder()
+                                    while (!head.endsWith("\r\n\r\n")) {
+                                        val byte = input.read()
+                                        if (byte < 0) return@use
+                                        head.append(byte.toChar())
+                                    }
+                                    val answer = "phone:" + head.toString().substringBefore("\r\n").split(' ')[1]
+                                    it.getOutputStream().write("HTTP/1.1 200 OK\r\nContent-Length: ${answer.length}\r\n\r\n$answer".toByteArray())
+                                    it.getOutputStream().flush()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        fun close() = server.close()
+    }
+
     private class Sockets(val port: Int) : Transport {
         override suspend fun request(method: String, path: String, credential: String, body: ByteArray?, headers: Map<String, String>, category: RequestCategory): TransportResponse =
             throw AgentConnectionException(AgentConnectionException.Reason.Unavailable)
@@ -149,12 +215,20 @@ class BrowserProxyTest {
     private lateinit var page: BrowserProxy.Page
     private lateinit var http: OkHttpClient
     private lateinit var client: AgentClient
+    @Volatile private var site: Site? = null
+    /** What the phone dialed itself, past a network's loopback. */
+    private val directs = CopyOnWriteArrayList<String>()
     private val origin = "http://aeachtest.happy-artifact.invalid"
 
     @Before fun setUp() {
         daemon = Daemon()
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         proxy = BrowserProxy(scope)
+        BrowserDirect.dialer = { authority ->
+            directs += authority.text
+            val site = site?.takeIf { authority.host == "public.test" } ?: throw BrowserException(BrowserException.Kind.Upstream, 502)
+            LocalSocket(Socket(InetAddress.getLoopbackAddress(), site.server.localPort))
+        }
         client = AgentClient(Sockets(daemon.server.localPort), "device-token")
         val authority = BrowserPolicy.Authority.of(origin)!!
         page = proxy.open(BrowserProxy.Scope.Artifact(client, "a1", 3, authority, network = null), webView = false)
@@ -166,6 +240,7 @@ class BrowserProxyTest {
     }
 
     @After fun tearDown() {
+        BrowserDirect.dialer = null
         page.close()
         proxy.shutdown()
         scope.cancel()
@@ -326,8 +401,9 @@ class BrowserProxyTest {
             site.newCall(Request.Builder().url("http://cdn.example.com/lib.js").build()).execute().use { assertEquals("site:/lib.js", it.body.string()) }
             // HTTPS is a tunnel of its own through the same route, its TLS end to end.
             runCatching { site.newCall(Request.Builder().url("https://secure.example/").build()).execute().close() }
+            // The page's GET and PUT to its own host share one tunnel; the CDN and the TLS host each have one.
             val outer = daemon.heads.filter { it.startsWith("CONNECT /v0/") }
-            assertEquals(4, outer.size)
+            assertEquals(3, outer.size)
             assertTrue(outer.all { it.startsWith("CONNECT /v0/artifacts/live1/proxy HTTP/1.1\r\n") && it.contains("Authorization: Bearer device-token") })
             assertTrue(daemon.heads.any { it.startsWith("CONNECT secure.example:443 ") })
             assertTrue(daemon.heads.any { it.startsWith("PUT /api/v1/kv/entry?key=a HTTP/1.1\r\n") })
@@ -336,6 +412,39 @@ class BrowserProxyTest {
             assertTrue(daemon.heads.filter { !it.startsWith("CONNECT /v0/") }.none { it.contains("device-token") })
         } finally {
             live.close()
+        }
+    }
+
+    /** On Happy Cloud every tunnel is a session the person has eight of at once: plain http to one host keeps one. */
+    @Test fun plainHttpToOneHostKeepsOneTunnel() {
+        val web = proxy.open(BrowserProxy.Scope.Web(client) { BrowserNetwork.network("host") }, webView = true, isolated = true)
+        try {
+            val site = through(web)
+            repeat(20) { index ->
+                site.newCall(Request.Builder().url("http://localhost:4191/module$index.js").build()).execute().use { assertEquals("site:/module$index.js", it.body.string()) }
+            }
+            site.newCall(Request.Builder().url("http://localhost:4191/api").post("{}".toRequestBody()).build()).execute().use { assertEquals("site:/api", it.body.string()) }
+            val outer = daemon.heads.filter { it.startsWith("CONNECT /v0/") }
+            assertEquals(1, outer.size)
+            assertTrue(outer.single().startsWith("CONNECT /v0/networks/host/proxy HTTP/1.1\r\n"))
+            assertEquals(1, daemon.heads.count { it.startsWith("CONNECT localhost:4191 ") })
+            assertTrue(daemon.heads.filter { !it.startsWith("CONNECT") && it.contains("Host: localhost:4191") }.all { it.contains("Connection: keep-alive") })
+        } finally {
+            web.close()
+        }
+    }
+
+    /** A target that let an idle keep-alive go: the request goes again on a fresh tunnel, and the page never sees it. */
+    @Test fun aKeptTunnelTheTargetClosedIsReplaced() {
+        val web = proxy.open(BrowserProxy.Scope.Web(client) { BrowserNetwork.network("host") }, webView = true, isolated = true)
+        try {
+            val site = through(web)
+            repeat(3) { index ->
+                site.newCall(Request.Builder().url("http://localhost:4192/page$index").build()).execute().use { assertEquals("once:/page$index", it.body.string()) }
+            }
+            assertEquals(3, daemon.heads.count { it.startsWith("CONNECT localhost:4192 ") })
+        } finally {
+            web.close()
         }
     }
 
@@ -353,6 +462,80 @@ class BrowserProxyTest {
             assertTrue(daemon.heads.none { it.contains("/v0/workspaces/") })
         } finally {
             live.close()
+        }
+    }
+
+    /** A tunnel that opened and ended without an answer is the server not responding, not the computer out of reach. */
+    @Test fun aTunnelThatEndsWithoutAnAnswerIsTheServerNotResponding() {
+        val web = proxy.open(BrowserProxy.Scope.Web(client) { BrowserNetwork.network("host") }, webView = true, isolated = true)
+        try {
+            for (request in listOf(Request.Builder().url("http://localhost:4193/"), Request.Builder().url("http://localhost:4193/").header("Connection", "close"))) {
+                through(web).newCall(request.build()).execute().use {
+                    assertEquals(502, it.code)
+                    val error = it.header("X-Happy-Proxy-Error")
+                    assertEquals("browser_proxy_upstream_response_invalid", error)
+                    assertEquals(BrowserProblem.ServerNotResponding, BrowserProblem.response(it.code, error, hasBody = true, link = null))
+                }
+            }
+        } finally {
+            web.close()
+        }
+    }
+
+    /** Happy Cloud's network says `destinations: "loopback"`: its dev servers through the tunnel, the rest of the page from the phone. */
+    @Test fun aNetworkThatCarriesOnlyItsLoopbackLeavesTheRestToThePhone() {
+        val site = Site().also { this.site = it }
+        val web = proxy.open(BrowserProxy.Scope.Web(client) { BrowserNetwork.network("host", BrowserDestinations.Loopback) }, webView = true, isolated = true)
+        try {
+            val browser = through(web)
+            browser.newCall(Request.Builder().url("http://localhost:4191/").build()).execute().use { assertEquals("site:/", it.body.string()) }
+            repeat(3) { index ->
+                browser.newCall(Request.Builder().url("${site.url}/lib$index.js").build()).execute().use { assertEquals("phone:/lib$index.js", it.body.string()) }
+            }
+            // A tunnel (HTTPS, a WebSocket) is the phone's too.
+            Socket(BrowserProxy.LOOPBACK, proxy.port).use { socket ->
+                val authority = site.url.removePrefix("http://")
+                socket.getOutputStream().write("CONNECT $authority HTTP/1.1\r\nHost: $authority\r\nProxy-Authorization: ${web.authorization}\r\n\r\nGET /tunnelled HTTP/1.1\r\nHost: $authority\r\n\r\n".toByteArray())
+                socket.soTimeout = 5000
+                val answer = StringBuilder()
+                while (!answer.endsWith("phone:/tunnelled")) {
+                    val byte = socket.getInputStream().read()
+                    if (byte < 0) break
+                    answer.append(byte.toChar())
+                }
+                assertTrue(answer.toString(), answer.startsWith("HTTP/1.1 200 Connection Established") && answer.endsWith("phone:/tunnelled"))
+            }
+            assertEquals(1, daemon.heads.count { it.startsWith("CONNECT localhost:4191 ") })
+            assertTrue(daemon.heads.none { "public.test" in it })
+            assertTrue(directs.all { it == site.url.removePrefix("http://") })
+            // One kept connection for the three plain requests, one for the tunnel.
+            assertEquals(2, site.connections.get())
+        } finally {
+            web.close()
+            site.close()
+        }
+    }
+
+    /** A network whose lookup didn't say: its refusal of a destination past the loopback teaches it, and a refused loopback port stays refused. */
+    @Test fun aDestinationTheNetworkRefusesIsDialedFromThePhone() {
+        val site = Site().also { this.site = it }
+        val web = proxy.open(BrowserProxy.Scope.Web(client) { BrowserNetwork.network("host") }, webView = true, isolated = true)
+        try {
+            val browser = through(web)
+            browser.newCall(Request.Builder().url("http://localhost:3128/").build()).execute().use {
+                assertEquals(403, it.code)
+                assertEquals("browser_proxy_upstream_refused", it.header("X-Happy-Proxy-Error"))
+            }
+            browser.newCall(Request.Builder().url("${site.url}/first").header("Connection", "close").build()).execute().use { assertEquals("phone:/first", it.body.string()) }
+            browser.newCall(Request.Builder().url("${site.url}/second").build()).execute().use { assertEquals("phone:/second", it.body.string()) }
+            // Asked once; from then on the phone dials it.
+            assertEquals(1, daemon.heads.count { it.startsWith("CONNECT public.test:") })
+            assertEquals(listOf(site.url.removePrefix("http://")), directs.distinct())
+            assertEquals(1, daemon.heads.count { it.startsWith("CONNECT localhost:3128 ") })
+            browser.newCall(Request.Builder().url("http://localhost:4191/").build()).execute().use { assertEquals("site:/", it.body.string()) }
+        } finally {
+            web.close()
+            site.close()
         }
     }
 

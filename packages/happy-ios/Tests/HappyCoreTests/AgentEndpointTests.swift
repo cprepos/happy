@@ -45,6 +45,40 @@ final class AgentEndpointTests: XCTestCase {
         await first.close(); await second.close()
     }
 
+    /// The engine reads no `/v0/config` while it runs: home's bootstrap,
+    /// carrying the same `config`, moves the way as it would.
+    func testHomesBootstrapMovesTheWayAsTheConfigDoes() async throws {
+        let saved = Saved()
+        let endpoint = AgentEndpoint(original) { try await saved.write($0) }
+        let factory = Factory()
+        let transport = AgentEndpointTransport(endpoint: endpoint, make: factory.make)
+        _ = try await transport.request("/v0/health", credential: "token")
+        await factory.created[0].transport.advertise(#"{"cursor":"c","config":{"api":{"publicUrl":"https://agent.example:8443"}}}"#)
+        _ = try await transport.request("/v0/bootstrap/desktop", credential: "token")
+        for _ in 0..<100 where await saved.values.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        _ = try await transport.request("/v0/health", credential: "token")
+        XCTAssertEqual(factory.created.last?.credentials.publicUrl, "https://agent.example:8443")
+        // One without `config` (a server's) changes nothing and fails nothing.
+        await factory.created.last?.transport.advertise(#"{"cursor":"c"}"#)
+        _ = try await transport.request("/v0/bootstrap/desktop", credential: "token")
+        await transport.close()
+    }
+
+    /// A connect warms before its stream or bootstrap has picked the way:
+    /// the way is picked for it, and warmed.
+    func testAWarmBeforeAnyRequestReachesTheWayItWillGo() async throws {
+        let endpoint = AgentEndpoint(original) { _ in }
+        let factory = Factory()
+        let transport = AgentEndpointTransport(endpoint: endpoint, make: factory.make)
+        await transport.warm(2)
+        XCTAssertEqual(factory.created.count, 1)
+        let warmed = await factory.created[0].transport.warmed
+        XCTAssertEqual(warmed, [2])
+        _ = try await transport.request("/v0/health", credential: "token")
+        XCTAssertEqual(factory.created.count, 1, "the request went another way")
+        await transport.close()
+    }
+
     func testFailedPublicRequestAndUnrelatedBearerCannotChangeSelection() async throws {
         var credentials = original; credentials.publicUrl = "https://agent.example"
         let saved = Saved()
@@ -198,6 +232,8 @@ final class AgentEndpointTests: XCTestCase {
     private actor Fake: AgentTransport {
         var config = #"{"config":{}}"#
         var closed = false
+        var warmed: [Int] = []
+        func warm(_ count: Int) { warmed.append(count) }
         var failing = false
         var delay = false
         var pending: CheckedContinuation<HTTP1Response, Never>?
@@ -212,7 +248,7 @@ final class AgentEndpointTests: XCTestCase {
         func request(method: String, path: String, credential: String, body: Data?, headers: [String: String]) async throws -> HTTP1Response {
             if failing { throw PairingError.unavailable }
             if delay, path == "/v0/config" { return await withCheckedContinuation { pending = $0 } }
-            return HTTP1Response(status: 200, body: Data((path == "/v0/config" ? config : "{}").utf8))
+            return HTTP1Response(status: 200, body: Data((path == "/v0/config" || path == "/v0/bootstrap/desktop" ? config : "{}").utf8))
         }
         func close() { closed = true }
     }

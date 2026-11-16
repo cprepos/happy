@@ -153,6 +153,10 @@ public actor SyncEngine {
     private var holdTimer: Task<Void, Never>?
     private var releaseHold: (@Sendable () async -> Void)?
     private var heldVerification = false
+    /// The newest hello, until home is verified on it (`connected`).
+    private var connection: (hello: JSONValue, gap: Bool, continued: Bool)?
+    /// Verified, with what waits for home held until the chat on screen is read.
+    private var waitingForChat = false
     private var eventIDs: Set<String> = []
     private var eventOrder: [String] = []
     private var refresh: Task<Void, Never>?
@@ -172,25 +176,38 @@ public actor SyncEngine {
     var held = true, setupFailed = false // SyncEngine+Addons.swift
     private var cursor: String?
     private var dirty = false
-    /// The team members the listed tasks belong to, as last read, kept
-    /// beside the bootstrap (`TeamUser`); those asked for and not named,
-    /// left until the stream comes back; and those to read again.
+    /// The team's members, as the newest bootstrap's `teammates` named
+    /// them (`TeamUser`), kept beside it; none outside a team.
     private var users: [String: TeamUser] = [:]
-    private var usersMissing: Set<String> = []
-    private var usersAgain: Set<String> = []
-    private var usersDirty = false
-    private var usersRead: Task<Void, Never>?
     private var gitWatcher: Task<Void, Never>?
     /// Rows drawn again soon, after agents' updates (`deriveSoon`).
     private var deriving: Task<Void, Never>?
     private var gitInterest: Set<String> = []
     private var gitSnapshots: [String: WorkspaceLineChanges] = [:]
 
+    /// What the newest bootstrap says of the computer itself: its
+    /// `health` and `config.node`, nil where it carries none.
+    public struct Computer: Equatable, Sendable {
+        public var health: JSONValue?
+        public var node: JSONValue?
+    }
+
+    /// What the engine hears of its computer that its connection shows
+    /// (`AgentConnections`): who it is, each time home is verified, and
+    /// that this device was unpaired.
+    public enum Heard: Sendable {
+        case verified(Computer)
+        case revoked
+    }
+    private let heard: (@Sendable (Heard) async -> Void)?
+    private var computer: Computer?
+
     /// `cloud`: a Happy Cloud server, which lists its plugins under
     /// Artifacts once its health says it serves them.
     public init(client: AgentClient, directory: URL?, cloud: Bool = false, streamHold: @escaping StreamHold = { _ in nil }, streamHoldDuration: Duration = .seconds(25),
-                resumeWindow: Duration = .seconds(30), rereadInterval: Duration = .seconds(10)) {
+                resumeWindow: Duration = .seconds(30), rereadInterval: Duration = .seconds(10), heard: (@Sendable (Heard) async -> Void)? = nil) {
         self.client = client
+        self.heard = heard
         self.cloud = cloud
         self.streamHold = streamHold
         // Held only while a resume from the cursor is still taken (`resumeWindow`).
@@ -268,6 +285,8 @@ public actor SyncEngine {
     public func start() {
         held = false
         guard !stopped, runner == nil else { return }
+        spaces.chatsFirst.close()
+        client.servedHealth.follow()
         backgrounded = false
         generation += 1
         verified = false
@@ -334,14 +353,17 @@ public actor SyncEngine {
         generation += 1
         verified = false
         heldVerification = false
+        connection = nil
+        waitingForChat = false
+        client.servedHealth.letGo()
         let pausedGeneration = generation
         holdID = nil; holdDeadline = nil
         holdTimer?.cancel(); holdTimer = nil
         let release = releaseHold; releaseHold = nil
         let events = eventStream; eventStream = nil
-        let tasks = [runner, refresh, delivery, messageDelivery, usersRead, gitWatcher].compactMap { $0 }
+        let tasks = [runner, refresh, delivery, messageDelivery, gitWatcher].compactMap { $0 }
         gitWatcher = nil; gitInterest = []
-        runner = nil; refresh = nil; delivery = nil; messageDelivery = nil; usersRead = nil
+        runner = nil; refresh = nil; delivery = nil; messageDelivery = nil
         deriving?.cancel(); deriving = nil
         tasks.forEach { $0.cancel() }
         await events?.close()
@@ -406,6 +428,9 @@ public actor SyncEngine {
 
     public func stop() async {
         stopped = true
+        // Before the pause, which would let them ask the computer.
+        client.servedHealth.close()
+        spaces.chatsFirst.end()
         await pause()
         await spaces.stop()
         await documents.stop()
@@ -438,6 +463,12 @@ public actor SyncEngine {
     }
 
     private func run(_ generation: Int) async {
+        // However this run ends, no chat waits for its stream.
+        defer { spaces.chatsFirst.open() }
+        // Flows for the screen's first reads, and the tunnel under them,
+        // coming up while what this phone keeps is read; a later connect
+        // of this run warms beside its stream.
+        warm()
         // Nothing goes out before this run has read the computer, even when
         // the pause before it was overtaken and left the outbox as it was.
         await intents.setOnline(false)
@@ -471,11 +502,14 @@ public actor SyncEngine {
         } catch {
             guard current(generation) else { return }
             // What this phone keeps could not be read: nothing to do with the link.
+            // No bootstrap will come: whoever waits for health asks.
+            client.servedHealth.letGo()
             snapshot.error = "Could not open this connection on this device."
             publish()
             return
         }
         var attempt = 0
+        var reconnecting = false
         while current(generation) {
             var resetStream = false
             do {
@@ -501,6 +535,11 @@ public actor SyncEngine {
                 // Asked for first, so the reads beside it usually begin after
                 // it and cover what came before it (`coverStream`).
                 await events.start(after: resuming ? streamCursor : nil)
+                if reconnecting { warm() }
+                reconnecting = true
+                // The chat on screen next, then home.
+                spaces.chatsFirst.open()
+                await spaces.chatsFirst.chatsAsked()
                 // The chat on screen is read beside a replay, however long
                 // the replay takes to come through.
                 if resuming { await spaces.externalOpening(replays: true) } else { await readAgain(generation) }
@@ -542,6 +581,7 @@ public actor SyncEngine {
                         let same = daemon != nil && daemon == verifiedDaemon
                         verifiedDaemon = verified || continued || same ? daemon : nil
                         if fresh { streamCursor = hello["cursor"]?.stringValue ?? streamCursor }
+                        connection = (hello, gap, continued)
                         if continued {
                             verified = true
                             snapshot.syncing = false
@@ -553,20 +593,16 @@ public actor SyncEngine {
                             streamStart = hello["cursor"]?.stringValue ?? ""
                             if refresh == nil { coverStream(generation) }
                         }
-                        watchGit()
                         publish()
-                        await documents.opened(hello)
                         profileChanged()
-                        // Reads the newest page each time, so a gap loses nothing.
-                        await feed.connected()
-                        await lookups.connected(gap: gap)
-                        await wantReferences()
-                        // Faces may have changed while away; picked up where
-                        // it left off, their `profile.updated` follows instead.
-                        usersMissing = []
-                        if !continued { readAuthors(generation, again: Set(users.keys)) }
+                        await feed.opened()
+                        await lookups.opened()
+                        // The documents on screen, as the chat on screen.
+                        await documents.opened(hello)
                         // Conversations and lists read again only for what they missed.
                         await spaces.externalOpened(missedBefore: continued ? nil : streamStart)
+                        // Home verified before this hello came.
+                        await connected(generation)
                         }, upTo: Self.helloDeadline)
                         // A later hello is a race candidate's, opened from the cursor.
                         resuming = true
@@ -592,7 +628,7 @@ public actor SyncEngine {
                     }
                     if event["type"] == .string("profile.updated") {
                         profileChanged()
-                        authorChanged(event["payload"]?["userId"]?.stringValue, generation)
+                        memberChanged(event["payload"]?["userId"]?.stringValue, generation)
                     }
                     if event["type"] == .string("user_settings.updated"), let value = event["payload"]?["setting"],
                        let setting = try? JSONDecoder().decode(UserSetting.self, from: JSONEncoder().encode(value)) {
@@ -648,6 +684,8 @@ public actor SyncEngine {
                 snapshot.live = false; snapshot.reconnecting = false
                 snapshot.error = client.signsIn ? "Your sign-in to this server has ended. Sign in again." : "This device was disconnected. Pair it again."
                 publish()
+                // A sign-in's ending is its authorization's to say.
+                if !client.signsIn { await heard?(.revoked) }
                 return
             } catch {
                 guard current(generation) else { return }
@@ -710,6 +748,53 @@ public actor SyncEngine {
         await intents.setOnline(deliveryAllowed)
         // Conversations send what waited for this.
         for listener in messageListeners.values { listener.continuation.yield(.allowed) }
+        // On its own task: the picture it may read waits behind what home needs.
+        if let computer { Task { [heard] in await heard?(.verified(computer)) } }
+        await connected(generation)
+    }
+
+    /// What waits for home to be verified (P2 of the sync order), once per
+    /// connection, after its hello and the delivery `allowDelivery` began:
+    /// the Feed's newest page, the artifact catalog, the workspaces' line
+    /// counts, open documents, then what the Feed names and its authors.
+    /// One stage at a time, each once the chat on screen has no read on
+    /// its way (sync order rule 9).
+    private func connected(_ generation: Int) async {
+        guard verified, let connection else { return }
+        self.connection = nil
+        waitingForChat = true
+        Task { await self.release(generation, connection) }
+    }
+
+    /// Two query flows kept open for the next requests (`IdleFlows.warm`).
+    private func warm() {
+        let client = client
+        Task { await client.warm(2) }
+    }
+
+    private func release(_ generation: Int, _ connection: (hello: JSONValue, gap: Bool, continued: Bool)) async {
+        let (_, gap, continued) = connection
+        let chatReads = client.chatReads
+        func stage() async -> Bool {
+            await chatReads.landed()
+            return current(generation) && verified
+        }
+        // Reads the newest page each time, so a gap loses nothing.
+        guard await stage() else { return }
+        await feed.connected()
+        // Its replay covers what a pick-up missed.
+        if !continued {
+            guard await stage() else { return }
+            await artifacts.refresh()
+        }
+        guard await stage() else { return }
+        waitingForChat = false
+        await watchGit()?.value
+        guard await stage() else { return }
+        await documents.resume()
+        guard await stage() else { return }
+        await lookups.connected(gap: gap)
+        await wantReferences()
     }
 
     /// Home read again: at once on connecting, else for news, at most one
@@ -740,6 +825,7 @@ public actor SyncEngine {
                     // News that came during the read, all of which it has.
                     if dirty, let through = newsThrough, let cursor, through <= cursor { dirty = false; covered = signalled }
                 } catch {
+                    client.servedHealth.missed()
                     // Signed out: the stream says so.
                     guard current(generation), (error as? AgentClientError) != .revoked else { break }
                     dirty = true
@@ -758,17 +844,17 @@ public actor SyncEngine {
         let read = reads
         let database = try database()
         let settingRevision = await database.confirmedSettingsRevision()
-        // What the server serves beside it; a failed read keeps what was known.
-        // The store hears it as soon as it is read: what Gen UI's actions may run.
-        let (client, spaces) = (client, spaces)
-        let health = Task {
-            let served = try? await client.health()
-            if let served { await spaces.externalCapabilities(served.capabilities) }
-            return served
-        }
         let value = try await client.decode(JSONValue.self, "GET", "/v0/bootstrap/desktop")
         let desktop = try JSONDecoder().decode(DesktopSnapshot.self, from: JSONEncoder().encode(value))
-        if cloud, let served = await health.value {
+        // What the server serves is the bootstrap's `health`, exactly
+        // `GET /v0/health`: no read of its own beside it. The store hears
+        // it at once: what Gen UI's actions may run.
+        client.servedHealth.take(value["health"])
+        computer = Computer(health: value["health"], node: value["config"]?["node"])
+        try await takeTeammates(value["teammates"])
+        let served = try await client.health()
+        await spaces.externalCapabilities(served.capabilities)
+        if cloud {
             let plugins = served.capabilities?.plugins == true
             if plugins != self.plugins {
                 self.plugins = plugins
@@ -809,13 +895,13 @@ public actor SyncEngine {
         for news in appliedNews { _ = HomeEvent.apply(news.event, to: &self.desktop!) }
         agentIndex = nil
         cursor = desktop.cursor
+        await feed.bootstrap(unread: desktop.feedUnread, cursor: desktop.cursor, capabilities: FeedCapabilities(health: value["health"] ?? .object([:])))
         if !verified {
             verified = true
             if snapshot.live { verifiedDaemon = streamDaemon; snapshot.syncing = false }
             await allowDelivery(generation)
         }
         coverStream(generation)
-        await feed.bootstrap(unread: desktop.feedUnread, cursor: desktop.cursor)
         snapshot.settings = try await database.settings()
         // This read began after these were taken, so it has them.
         if settling.contains(where: { $0.read < read }) {
@@ -826,64 +912,26 @@ public actor SyncEngine {
         deriveDirectory()
         // The Feed's names wait for a bootstrap to know the rest by.
         await wantReferences()
-        readAuthors(generation)
     }
 
-    // MARK: Authors
+    // MARK: People
 
-    /// A member's name or picture changed (`profile.updated` names them in
-    /// a team): theirs is read again. The signed-in person's own comes with
-    /// the bootstrap.
-    private func authorChanged(_ id: String?, _ generation: Int) {
-        guard let id, let desktop, let me = desktop.profile?.userId else { return }
-        if id == me { return scheduleReconcile(generation) }
-        guard SidebarRows.authors(desktop).contains(id) else { return }
-        usersMissing.remove(id)
-        readAuthors(generation, again: [id])
+    /// Someone's name or picture changed (`profile.updated`): the signed-in
+    /// person's own, or a teammate's, comes with the next bootstrap.
+    private func memberChanged(_ id: String?, _ generation: Int) {
+        guard let id, let desktop else { return }
+        if id == desktop.profile?.userId || users[id] != nil { scheduleReconcile(generation) }
     }
 
-    /// Reads the members the listed tasks belong to that this phone doesn't
-    /// know yet, and `again` those that changed: one read at a time, an ask
-    /// made meanwhile read when it lands. None outside a team.
-    private func readAuthors(_ generation: Int, again: Set<String> = []) {
-        usersAgain.formUnion(again)
-        usersDirty = true
-        guard usersRead == nil else { return }
-        usersRead = Task {
-            while usersDirty && current(generation) {
-                usersDirty = false
-                guard let desktop else { break }
-                let authors = SidebarRows.authors(desktop)
-                let wanted = authors.filter { (users[$0] == nil && !usersMissing.contains($0)) || usersAgain.contains($0) }.sorted()
-                usersAgain.subtract(wanted)
-                guard !wanted.isEmpty else { continue }
-                var read: [TeamUser] = []
-                do {
-                    for start in stride(from: 0, to: wanted.count, by: 100) {
-                        read += try await client.teamUsers(Array(wanted[start..<min(start + 100, wanted.count)]))
-                    }
-                } catch {
-                    // Asked again when the stream comes back; meanwhile
-                    // they wear their placeholders.
-                    usersMissing.formUnion(wanted)
-                    continue
-                }
-                guard current(generation) else { break }
-                usersMissing.formUnion(Set(wanted).subtracting(read.map(\.id)))
-                // Members no listed task belongs to any more are let go.
-                var next = users.filter { authors.contains($0.key) }
-                for user in read { next[user.id] = user }
-                // A read that changed nothing redraws and writes nothing.
-                guard next != users else { continue }
-                users = next
-                let kept = try? JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(next.values.sorted { $0.id < $1.id }))
-                if let kept { try? await database().commit(.init(value: kept, cursor: nil), named: "users") }
-                guard current(generation) else { break }
-                derive()
-                deriveDirectory()
-            }
-            if self.generation == generation { usersRead = nil }
-        }
+    /// The bootstrap's `teammates`, kept for the next launch: names and
+    /// pictures for the tasks' authors. Standalone, it sends none.
+    private func takeTeammates(_ teammates: JSONValue?) async throws {
+        let list = (teammates.flatMap { try? JSONDecoder().decode([Lossy<TeamUser>].self, from: JSONEncoder().encode($0)) } ?? []).compactMap(\.value)
+        let next = Dictionary(list.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        guard next != users else { return }
+        users = next
+        let kept = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(next.values.sorted { $0.id < $1.id }))
+        try await database().commit(.init(value: kept, cursor: nil), named: "users")
     }
 
     public func setProjectsHidden(_ hidden: Bool) async throws {
@@ -1082,15 +1130,20 @@ public actor SyncEngine {
     /// One subscription set per open account, never one request per row.
     /// Renewing keeps the daemon's bounded watcher interest alive; changes
     /// themselves arrive on the existing event stream.
-    private func watchGit() {
-        guard snapshot.live, !stopped else { return }
+    /// Returns what ends with the first watch's answer, when one is asked.
+    @discardableResult
+    private func watchGit() -> Task<Void, Never>? {
+        guard snapshot.live, verified, !waitingForChat, !stopped else { return nil }
         let ids = Set(snapshot.rows.compactMap(\.workspaceId))
-        guard gitWatcher == nil || ids != gitInterest else { return }
+        // Nothing to watch yet: home's first rows on a fresh install come with its bootstrap.
+        guard gitWatcher == nil ? !ids.isEmpty : ids != gitInterest else { return nil }
         gitWatcher?.cancel()
         gitInterest = ids
         gitSnapshots = gitSnapshots.filter { ids.contains($0.key) }
         let generation = generation
+        let (answered, answer) = AsyncStream.makeStream(of: Void.self)
         gitWatcher = Task {
+            defer { answer.finish() }
             while current(generation), snapshot.live {
                 do {
                     struct Response: Decodable { var snapshots: [String: WorkspaceLineChanges] }
@@ -1100,11 +1153,13 @@ public actor SyncEngine {
                     guard current(generation), gitInterest == ids else { return }
                     receiveGit(response.snapshots)
                 } catch { if Task.isCancelled { return } }
+                answer.finish()
                 // Renewed within 30 seconds as before, but from 20 on with the
                 // computer's heartbeat, while the radio is up for it anyway.
                 do { try await RadioWake.shared.next(after: .seconds(20), by: .seconds(30)) } catch { return }
             }
         }
+        return Task { for await _ in answered {} }
     }
 
     private func receiveGit(_ states: [String: WorkspaceLineChanges]) {

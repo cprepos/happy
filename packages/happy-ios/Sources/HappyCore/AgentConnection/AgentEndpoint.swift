@@ -114,6 +114,16 @@ actor AgentEndpointTransport: AgentTransport {
     func request(method: String, path: String, credential: String, body: Data?, headers: [String: String], category: RequestCategory) async throws -> HTTP1Response {
         let (base, snapshot) = try await current()
         let response = try await base.request(method: method, path: path, credential: credential, body: body, headers: headers, category: category)
+        if method == "GET", path == "/v0/bootstrap/desktop", response.status == 200, credential == snapshot.credentials.deviceToken {
+            // Home's bootstrap carries the same `config`: the open account's
+            // way kept current by its engine, which reads no `/v0/config`.
+            // Read beside it, so home isn't held for it.
+            let endpoint = endpoint, body = response.body
+            Task {
+                guard let advertisement = try? AgentEndpointAdvertisement.decode(body) else { return }
+                _ = try? await endpoint.apply(advertisement, from: snapshot)
+            }
+        }
         if method == "GET", path == "/v0/config", response.status == 200, credential == snapshot.credentials.deviceToken {
             let advertisement = try AgentEndpointAdvertisement.decode(response.body)
             let changed = try await endpoint.apply(advertisement, from: snapshot)
@@ -143,6 +153,9 @@ actor AgentEndpointTransport: AgentTransport {
     func reset() async { await selected?.0.reset() }
     func reset(_ category: RequestCategory) async { await selected?.0.reset(category) }
     func resumed() async { await selected?.0.resumed() }
+    /// On the way it will go, chosen now if nothing has asked yet: a
+    /// connect warms before its stream or bootstrap picked one.
+    func warm(_ count: Int) async { try? await current().0.warm(count) }
     func close() async {
         closed = true
         await endpoint.removeObserver(id)

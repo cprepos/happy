@@ -439,6 +439,13 @@ public actor Conversation {
     /// read again, once.
     private var readCursor: String?
     private var streamFrom: String?
+    /// Opened before its engine asked for the stream: home's read waits
+    /// until this chat's has gone (`ChatsFirst`).
+    private var holdsHome = false
+    /// The stream openings heard (`.resync(from: nil)`), and the one a
+    /// read asked after its stream was asked for landed before.
+    private var openings = 0
+    private var readAtOpening: Int?
     /// The account's stream picks up where it left off (`.resync(replays:)`):
     /// its replay brings what changed in runs that had finished, so the read
     /// beside it need only bring the runs after the newest finished one held.
@@ -574,10 +581,12 @@ public actor Conversation {
     public func start() async {
         guard beginStart() else { return }; defer { starting = false } // plugins
         guard following == nil else { return }
+        if creation == nil, !holdsHome { holdsHome = store.chatsFirst.opening() }
         do { try await checkpointClaim(for: "conversation:\(agentId)").value }
         catch {
             checkpointClaims.removeValue(forKey: "conversation:\(agentId)")
             Self.note("claim failed for \(agentId)")
+            letHomeAsk()
             snapshot.error = "Could not open this conversation on this device."; publish(); return
         }
         if stopped { return }
@@ -605,6 +614,7 @@ public actor Conversation {
 
     public func stop() async {
         stopped = true
+        letHomeAsk()
         following?.cancel(); following = nil
         children?.cancel(); children = nil
         questionEvents?.cancel(); questionEvents = nil
@@ -745,11 +755,14 @@ public actor Conversation {
                     // The stream's `.resync(from:)` says whether it covers.
                 } else if replays, !visible, heldEvents == nil {
                     // Off screen, the replay brings what it missed.
+                } else if from == nil, readAtOpening == openings {
+                    // Read since this stream was asked for: its hello says whether it covers.
                 } else if from.map(covered) != true {
                     // Some may be lost: not current again until the read below is in.
                     snapshot.synced = false
                     reload()
                 }
+                if from == nil { openings += 1; readAtOpening = nil }
                 deliverWaiting()
             case .event(let envelope):
                 if heldEvents != nil { heldEvents?.append(envelope) } else { receive(envelope) }
@@ -782,36 +795,48 @@ public actor Conversation {
                 if heldEvents == nil { heldEvents = [] }
                 let after = anchored ? anchor() : nil
                 let resets = await store.carrierResets
+                // Its engine stopped (signed out): nothing is asked, and the
+                // read fails as one on its closed client did.
+                guard await store.chatsFirst.wait() else { letHomeAsk(); failed(CancellationError()); return }
+                let opening = holdsHome ? openings : nil
+                client.chatReads.began()
                 do {
                     async let bootstrap = client.bootstrap(agentId)
                     async let page = client.messages(agentId, after: after?.message)
+                    letHomeAsk()
                     var (start, history) = try await (bootstrap, page)
                     var since = after?.run
                     if since != nil, history.hasMore { history = try await client.messages(agentId); since = nil }
+                    client.chatReads.ended()
                     if Task.isCancelled { return }
+                    if let opening { readAtOpening = opening }
                     adopt(start, history, since: since)
                     return
                 } catch {
+                    client.chatReads.ended()
                     if Task.isCancelled { return }
                     // A message the computer no longer holds: the newest runs instead, at once.
                     if after != nil, case AgentClientError.status = error { anchored = false; continue }
                     // Let go with its client (a network change): asked again, unsaid.
-                    if await store.carrierResets == resets {
-                        reads += 1
-                        snapshot.synced = false
-                        snapshot.error = Store.describe(error)
-                        Happenings.errorShown(.conversationLoad, error)
-                        snapshot.loaded = true
-                        let held = heldEvents ?? []
-                        heldEvents = nil
-                        for event in held { receive(event, publishes: false) }
-                        publish()
-                    }
+                    if await store.carrierResets == resets { failed(error) }
                 }
                 do { try await Task.sleep(for: .seconds(min(30, 1 << min(failures, 5)))) } catch { return }
                 failures += 1
             }
         }
+    }
+
+    /// A read that didn't land: shown with what came meanwhile.
+    private func failed(_ error: Error) {
+        reads += 1
+        snapshot.synced = false
+        snapshot.error = Store.describe(error)
+        Happenings.errorShown(.conversationLoad, error)
+        snapshot.loaded = true
+        let held = heldEvents ?? []
+        heldEvents = nil
+        for event in held { receive(event, publishes: false) }
+        publish()
     }
 
     /// The newest run held here that has finished, and its last message,
@@ -892,6 +917,16 @@ public actor Conversation {
             streamFrom = nil
             if !covered(from) { reload() }
         }
+    }
+
+    deinit {
+        if holdsHome { store.chatsFirst.asked() }
+    }
+
+    private func letHomeAsk() {
+        guard holdsHome else { return }
+        holdsHome = false
+        store.chatsFirst.asked()
     }
 
     /// The newest read taken began after the stream that began at `from`.

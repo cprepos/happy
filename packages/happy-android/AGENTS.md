@@ -213,7 +213,10 @@ Preserve credential and push compatibility on upgrades.
 5. **Every screen has the standard top app bar** (`Header`, through
    `Screen`/`StackHeader` where it can), and its back button does what the
    system back does. Never hide it, or replace it with a custom or floating
-   bar, without Steve's explicit OK. Steve made two exceptions: the
+   bar, without Steve's explicit OK. It is drawn by `components/TopBar`,
+   Material's small top app bar to the pixel; Material's own `TopAppBar`
+   reads the title's baseline while measuring, which on Compose UI 1.12
+   crashed a retained page shown again (b/549552303), so don't use it. Steve made two exceptions: the
    first screen (`ui/start`): no bar, only a floating ⋮ over the
    full-window gradient; and the QR scanner: no bar, the camera full
    window with a floating close (✕) top right.
@@ -668,9 +671,47 @@ first frame (research/cold-start.md, `ColdStartTest`). An agent
 connection keeps, beside its catalog, each opened
 conversation's newest 100 runs (`KeptConversation`, iOS's
 `conversation:<agentId>`), its Surfaces' last read, and bots' and
-projects' pictures; a chat shows its kept runs, then asks only
-`messages?after=` the newest finished run's last message. The journal
-resumes from the kept cursor; only a gap reads the snapshot again.
+projects' pictures; a chat shows its kept runs, then normally asks only
+`messages?after=` the newest finished run's last message. A chat restored for
+connection startup adopts the session's prefetched latest page instead. The journal
+resumes from the kept cursor only while the in-memory stream last-heard time
+is less than 30 seconds old (heartbeats count). A cold process or an older
+stream opens without a cursor and reads a new home bootstrap.
+
+**Connecting at process start** (`agent/StartupLink`). A process started for
+the window (its importance foreground in `Application.onCreate`; not a push, a
+broadcast or the file provider) reads which agent connection opens, its
+credentials and the relay map on IO, and connects its main Tailcat client
+then, beside the app graph instead of after it, the window and the
+foreground. The session takes that transport through `AgentSessions`'
+makeTransport (same credentials, once), so there is one transport and one main
+client. Until taken it is closed when another account opens or the connection
+is removed, signed out, ended or revoked. Anything that fails there leaves the
+session to connect as before.
+
+**Tailcat startup order.** `AgentSession.phase` is `Offline`, `P0Connecting`,
+`P0Live` (hello), then `Verified` (home bootstrap landed and owner checked).
+Open the stream first, then a restored visible chat's bootstrap and latest
+messages, then `/v0/bootstrap/desktop`; the conversation adopts that chat read
+once. Saved navigation supplies the chat ID before foreground startup. A
+late navigation starts the chat immediately without cancelling the home read.
+Only `Verified` starts outbox replay, Feed, the session-owned artifact catalog,
+git watches, and open document work. Pictures use file clients. Bootstrap
+`health` is shared by capability readers; missing health disables capabilities.
+Bootstrap `config.node` updates identity when present. Neither needs a separate
+startup health/config request. People come only from bootstrap teammates (or
+the standalone profile), never per-author lookups.
+Home's “Updating…” uses only the session's P0 phase and clears at Verified.
+A chat's “Updating…” uses only its own history read; home bootstrap and P2
+cannot keep it updating. Hello sets connection status to Connected; before
+hello the header says “Connecting…”. Delivery and P2 still wait for Verified.
+The header debounce keeps its existing behavior.
+At Verified, intent delivery is allowed immediately. `AgentSession` then
+awaits Feed connect/read, artifact catalog, and the first git watch in that
+order before opening documents. Before each stage it waits for the open
+chat's in-flight reads to finish. Delivery remains independent; there is no
+transport scheduler or connection reservation. Existing git renewals continue
+after startup.
 
 **Store merges** (`HappyStore`). Writes merge instead of overwrite: each
 versioned document (metadata, agentState, daemonState) keeps the higher
@@ -916,7 +957,7 @@ provider and ProfileInstaller's initializer are removed for that). Work
 nothing on the first screen shows waits for `LocalAfterStart` (push
 registration, notification channels), and glass blurs
 from the window's second frame (`FirstFrame`). Keep
-`HappyApplication.onCreate` to the debug StrictMode it has. The Baseline and
+`HappyApplication.onCreate` to the debug StrictMode and `StartupLink`'s start. The Baseline and
 startup profiles (`app/src/main/generated/baselineProfiles`) come from
 `benchmark/`'s generator; regenerate them after large UI changes, with only
 the target device's serial:
@@ -1847,6 +1888,18 @@ cut falls at seventy lines of text height. A tap on the bubble calls `Conversati
 and flips `ConversationRow.User.opened`. `FoldHold` keeps the row above the
 message in place, so the bubble opens downward.
 
+A `user` message whose `metadata.senderAgentId` is the agent's own was
+written by nobody: a goal's continuation, a message the agent scheduled for
+itself, a pipeline run's result. It is never the person's bubble
+(`ConversationRow.SelfNote`, `SelfNoteViews`; desktop #156). It is one
+quiet line, its `senderAgentExplanation` or "Message to itself", whose
+words open under it on a tap. With `metadata.pipelineRun` it is a card
+drawn from that alone: the run's state glyph and colour, the pipeline's
+name over its version and how it ended, the cluster's `summary` as sent
+(never parsed, nor the sentence). A tap opens `PipelineRunRoute`, which is
+when the run is read. A run's result still `pending` isn't drawn: the
+cluster may withdraw it. The kept history keeps both fields (version 3).
+
 Code in a Happy Agent chat works as on desktop (3365ef9f, 3e08585d).
 ConversationScreen provides `LocalCodeCopy` = `CodeCopy.Icon`, so
 MarkdownView's code block shows a quiet 14 copy glyph in a 24 box, 6 in
@@ -2196,12 +2249,19 @@ is `packages/happy-ios`. The wire keeps its own names
   checks its MAC before anything is kept; `AgentIdentity` reads health
   (protocol 27 or later) and `config.node`; `AgentConnections` keeps each
   connection's credentials Keystore-encrypted, apart from relay credentials.
-- **Transport** (`TailcatTransport`): tailcat-kotlin, and a fresh TCP
-  stream to `server.tailcat:<port>` per HTTP/1.1 request, framed by
-  `HttpResponseParser`. Each request says its `RequestCategory`, which
+- **Transport** (`TailcatTransport`): tailcat-kotlin, with iOS's `IdleFlows`
+  per client: four newest idle TCP connections, kept for 50 s and watched
+  for peer data or EOF. Only exact, self-delimited HTTP/1.1 answers without
+  `Connection: close` return their connection. A stale kept GET retries
+  once fresh before considering a tunnel reset; mutations never retry.
+  A reused head write has 5 s. Reset/close empties the client's pool;
+  resume drops idle connections and rejects returns from before that drop.
+  Every connect asks the event stream first, then warms two ordinary main
+  connections alongside bootstrap. SSE and raw browser sockets stay outside
+  this pool; HTTPS still closes every answer. Each request says its `RequestCategory`, which
   picks its client in the connection's `TailcatClients` (iOS's, same names):
-  one for `Realtime` (the event stream), one for `Query` (the default) and up
-  to eight for `File` (pictures and avatars, attachments, messages with
+  one shared main client for `Realtime` (the event stream) and `Query`
+  (the default), and up to three for `File` (pictures and avatars, attachments, messages with
   images, tool-call media, artifact files, and the in-app browser's
   sockets). Each client is made on first use with a node key of its own,
   fresh on every connect: the agent and the DERP relay tell clients apart by
@@ -2240,8 +2300,8 @@ is `packages/happy-ios`. The wire keeps its own names
   default network that moves to another one with no loss between (Wi-Fi to
   cellular, `NetworkChange.Moved` from `defaultNetwork().changes()`, iOS's
   4760daf0c) is different: what was open went out the old way and can hang
-  there silently, so a running link resets its realtime and query clients,
-  says connecting and starts over from its cursor at once
+  there silently, so a running link resets its shared main client,
+  says connecting and reconnects, using its cursor only within the 30-second window
   (`AgentSession.networkMoved`); the rest get the check. It uses
   tailcat-kotlin's default DERP map (`https://tailcat.dev/derpmap.json`),
   cached in `noBackupFilesDir/tailcat/derpmap.json` (`FileDerpMapCache`):
@@ -2252,7 +2312,13 @@ is `packages/happy-ios`. The wire keeps its own names
   `io.tailcat` group only; the catalog pins the version. When it is
   published, switch the catalog and delete both. `tools/tailcat/patches`
   would hold fixes not yet in tailcat-kotlin, applied on top of the commit
-  (the version's `-p<n>`); there are none today. The pinned commit has
+  (the version's `-p<n>`). `0001` traces direct-path discovery (STUN, the
+  endpoints each side advertises by class and port, pings and pongs) into the
+  startup trace HappyTiming logs; it changes no behaviour. `0002` sends STUN
+  binding requests the way Tailscale's STUN servers (every DERP's) require,
+  with SOFTWARE `tailnode` and a FINGERPRINT; they drop a bare request, so
+  without it the phone never learns its public endpoint and direct never
+  validates behind NAT. The pinned commit has
   tailcat-swift's recovery fixes to its 7cad775 except SACK (rejoin on a
   restarted computer's `meow\x03`, 15 s unanswered and 5 s owed-data
   rejoins, resend of what each flow owes after a rejoin or a relay
@@ -2274,8 +2340,12 @@ iOS's `docs/browser-proxy.md` is the contract; `browser/` ports it
   provides one per open account (`ProvideLinks`, which also replaces
   `LocalUriHandler`). With an agent connection open, a tap on a web link
   pushes `BrowserRoute`: the in-app browser through the agent, the local
-  host workspace's network; a conversation narrows that to its agent's
-  workspace. Other schemes go to the system. On a Happy (relay) account a
+  host workspace's network; a conversation narrows that to its agent's own
+  network, the one its commands run in (`agentNetwork`: `GET
+  /v0/workspaces/:ws/agents/:id/proxy` names it, then every tunnel is
+  `CONNECT /v0/networks/:networkId/proxy`, on a computer and on Happy Cloud
+  alike; a paired computer that names none has its workspace's proxy, a
+  server signed in to nothing). Other schemes go to the system. On a Happy (relay) account a
   tap does exactly what it did before (the system handler). A long press
   on a link gives a haptic and a bottom sheet: Open in Happy browser
   (through the agent; on a relay account a Custom Tab on the phone's
@@ -2305,7 +2375,20 @@ iOS's `docs/browser-proxy.md` is the contract; `browser/` ports it
 - **Remote only.** Every WebView request goes through `ProxyController`'s
   override to the loopback `BrowserProxy`, with no bypass rules, applied
   before the first load; a WebView without `PROXY_OVERRIDE` shows
-  "unsupported" and loads nothing. There is no direct fallback.
+  "unsupported" and loads nothing. There is no direct fallback, but the proxy
+  itself dials past the loopback of a network that carries only that (below).
+- **Loopback-only networks** (`BrowserDestinations`, iOS's docs/browser-proxy.md):
+  the agent's network lookup may say `destinations: "loopback"` (Happy
+  Cloud). Then only `localhost`, `*.localhost`, `127.0.0.0/8` and `::1`, by
+  the host as written and never resolved, go through its tunnels; the proxy
+  dials the rest from the phone over plain TCP (`BrowserDirect`), the page's
+  TLS end to end and nothing of the agent's with it. Absent, every
+  destination is tunnelled as before. A nested CONNECT refused
+  `403 destination_not_allowed` past the loopback teaches the page the same
+  (`Page.dial`); one to a loopback port (a reserved one, `3128`) stays a 403
+  and is never dialed. The trade-off: a page's public requests leave from
+  the phone's network, so a page can reach the phone's LAN, where through
+  the tunnel it could only reach the computer's loopback.
 - **Android limits and what we do:**
   - The proxy override is process-wide, not per WebView as WKWebView's.
     While a browser page is open, every WebView of the app (Mermaid's too)
@@ -2336,12 +2419,36 @@ iOS's `docs/browser-proxy.md` is the contract; `browser/` ports it
     can't reach.
 - **Pooling** (`BrowserConnectionPool`, `BrowserResponseBody`): artifact
   `/api/*` requests lease keep-alive connections per page (6 idle, 5 s),
-  returned only after an exact, self-delimited answer; everything else
-  closes after one answer. `BrowserProxyTest` runs OkHttp through the
+  returned only after an exact, self-delimited answer. Plain http through
+  a network keeps its tunnel for as long as WebView keeps its connection
+  to the proxy and asks the same host (`PageConnection`, `relayKeeping`):
+  on Happy Cloud each tunnel is a session the person has eight of, so one
+  Vite page load is 3 tunnels, not 9. A kept tunnel the dev server let go
+  of while idle is replaced and the request sent again. Upgrades, chunked
+  or oversized uploads and `Connection: close` still close after one
+  answer. `BrowserProxyTest` runs OkHttp through the
   proxy against a byte-level fake daemon; `BrowserWebViewDeviceTest`
   (androidTest, an emulator) does the same with real WebViews: two artifact
   pages in their own profiles at once, the computer's localhost, and the
   cleartext refusal.
+- **Compute disconnected** (`BrowserCompute`, iOS's docs/browser-proxy.md):
+  on Happy Cloud a chat's page follows its agent's `compute`
+  (`browserAgentCompute`: read, then `agent.updated`, read again after a
+  `hello`; only once it said online or offline, since a computer's own
+  agents say `type: "none"`). Detached or offline sets `page` to null, so
+  the WebView and the proxy page go, and shows Compute Disconnected;
+  online bumps `attempt` at the same address. Tunnel refusals close it
+  first: `409 no_compute` or `503 compute_offline`/`runner_unavailable`/
+  `draining` (JSON code) on the lookup, the network route or the nested
+  CONNECT, and an open twin closed `1001 no_compute`/`compute_offline`
+  (`BrowserRelay.duplex` throws it once both sides closed). `1000 idle`,
+  `1008`, `429` and `502 proxy_target_unavailable` are not the compute.
+  A closed page probes a tunnel (`computeAnswers`) every 3 s doubling to
+  30 s while the compute last said it was there: a compute back within
+  its grace sends no news. A page reopened so whose server isn't
+  responding yet (a dev server still starting) loads again after 2, 4, 8
+  and 15 s (`BrowserState.reopenRetryMillis`), then leaves Try Again; an
+  ordinary load never retries by itself.
 - **App mode** (`<meta name="happy-page-mode" content="app">`, the
   contract shared with desktop and iOS, as agents read it in
   happy-agent's docs/DESIGN.md §1.8). `artifacts/ArtifactPageMode` reads the entry's first
@@ -2462,6 +2569,94 @@ words are `strings_plugins.xml` in every locale.
 - **Fixture:** debug builds have `ui.plugins.PluginsFixturesActivity`: the
   real pages over an in-memory server (`--ez plugins.member true` for a
   member).
+
+### Pipelines
+
+A Happy Cloud server's pipelines, read only (happy-cluster API.md,
+"Pipelines"; desktop's pipeline pages and `pipelineRead.ts`, which the
+readers follow). `pipelines/` is the wire and state, `ui/pipelines/` the
+pages; words are `strings_pipelines.xml` in every locale.
+
+- **Where:** home's Pipelines row under Plugins (`AgentFeedRow.Pipelines`,
+  `MainPanelKey.PIPELINES` on the tablet), shown only while health says
+  `capabilities.pipelines` (`AgentSession.pipelinesAvailable`, a
+  `CapabilityAvailability` kept per connection so the row doesn't come and
+  go). Nothing is probed: without the flag there is no row and no request.
+- **Wire:** `PipelinesBackend` (`ClusterPipelines`). Readers are tolerant
+  as desktop's: what isn't the shape is left out, a name the server leaves
+  out is the ID, `trigger.agentId` may be null. `GET /v0/pipeline-runs`
+  answering 404 means the server doesn't list runs across pipelines; the
+  page says so and doesn't ask again.
+- **Following:** `PipelinesSource` reads the pipelines again on
+  `pipeline.updated` and `pipeline.run.updated`, the newest page of runs on
+  `pipeline.run.updated`, both on `hello` and on Retry. Events are hints.
+  Older pages read stay under a fresh newest page (`pipelineRunsMerge`). A
+  failed read keeps what showed and says it may be out of date.
+  `PipelineRunSource` reads one run again on `pipeline.run.updated` and
+  `pipeline.node.updated` naming it, its parent or a child (an event without
+  `runId` counts), and on `hello`; the version's graph once; its parent and
+  children until they end; its pipeline's name once (`GET /v0/pipelines/:id`,
+  404 for an archived one: the opening page's name or the ID).
+  `PipelineNodeLogSource` reads only what came after (`after`, 500 a page, ten
+  pages a read) on `pipeline.node.log` for its run and node; `changed`
+  entries replace their copy (`pipelineLogMerge`); 404 is a node with no log
+  yet. Abort is `POST …/abort` behind a confirmation, only while queued or
+  running; the run reads aborted only once the next read says so, and a
+  refusal shows the server's words. `PipelineSource` reads one pipeline
+  (`GET /v0/pipelines/:id`, its head's definition with it) and its versions
+  on `pipeline.updated`, the newest page of its runs on
+  `pipeline.run.updated`, both on `hello`; an event naming another pipeline
+  is left alone. A 404 is an archived pipeline: its runs still read.
+  `PipelineVersionSource` reads one version once (versions never change).
+  `RunPages` is the runs paging both list sources share.
+- **Definition:** `readDefinition` reads the whole of it (`PipelineDefinition.kt`):
+  types in the schema subset (`PipelineSchema`, with the JSON Schema kept for
+  Show JSON Schema), concurrency, `triggers.agents`, the permission ceiling
+  and each node's, compute, timeout, join, model, effort, source and
+  instructions. A node, edge or type it can't read refuses the version,
+  rather than half drawing it; the pipeline still reads.
+- **Page:** the pipelines by name (head version, Disabled, last run's state
+  and when), then every run newest first: state glyph and word, pipeline
+  (a child's ↳, an archived pipeline's quiet), version, who started it (the
+  agent by home's name, a child by its parent's pipeline and node), when,
+  and how long it took or has taken, ticking each second while a run is
+  live. Older runs page in from the button under them. A run row opens the
+  run (`PipelineRunRoute`): its state, who started it, when, its group,
+  Abort; why it failed, right under that; the parent run; the nodes in graph order (longest path from the
+  root, ties in definition order: `pipelineNodeOrder`), each with its state,
+  newest status line or kind, and duration, a skipped node or one never
+  reached dimmed (why it failed is the failure code in words, desktop's
+  `pipelineFailureTitle`, then the node, the code and the message's last
+  line); child runs; usage; computers; input and result as JSON. A node opens
+  `PipelineNodeRoute`: its state, status, child run, failure (a traceback in
+  monospace), then its log as a CI log in a lazy list (`m:ss` gutter; output
+  monospace, stderr red; commands with exit code and duration, folded unless
+  running, failed or watched; tool calls; agent messages as Markdown; status
+  lines; each row's time on its first baseline), then usage, output, input,
+  status history and computers. While the node runs and the log's end is on
+  screen the page follows what arrives; the reader scrolling the end away
+  stops it, scrolling back starts it (`followLogEnd`). A pipeline's row, and
+  the Pipeline row of a run, open `PipelineRoute`: its description, Enabled
+  or Disabled, current version, concurrency in words (mode, group key,
+  batching), then `DefinitionGroups`: the nodes in graph order (kind, where
+  success and failure lead, Root), input and output field by field (name,
+  TypeScript-like type, Required or Optional), who may start it, the
+  ceiling's permissions and each node's, "nothing granted" said plainly;
+  then versions newest first and its runs as the list draws them. A version
+  opens `PipelineVersionRoute` (the same groups for that version), a node
+  `PipelineVersionNodeRoute`: model, where it sits, types, permissions,
+  computers, limits, and its source, instructions or child pipeline.
+- **Fixture:** debug builds have `ui.pipelines.PipelinesFixturesActivity`:
+  the real pages over an in-memory server with every run readable (a running
+  deploy waiting on a child test run whose log grows, a failed one with a
+  traceback and an agent triage node, an agent pipeline with usage), changing
+  with the events a server sends; Abort works. `--ez pipelines.open true`
+  opens the list, `--es pipelines.run r-failed` a run and with
+  `--es pipelines.node build` its node; `--es pipelines.pipeline p-deploy` a
+  pipeline, with `--ei pipelines.version 2` a version, and with
+  `--es pipelines.node triage` that version's node; `--ez pipelines.chat
+  true` a chat told how its runs ended (`pipelines.chat.before` draws the
+  agent's own messages as before they were told apart).
 
 ## Autocomplete
 

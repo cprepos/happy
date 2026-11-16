@@ -2,6 +2,7 @@ package com.slopus.happy.agent
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 
@@ -132,6 +133,9 @@ data class WireProfile(val userId: String? = null, val name: String? = null, val
  */
 @Serializable
 data class WireDesktopBootstrap(
+    val health: JsonObject? = null,
+    val config: JsonObject? = null,
+    val teammates: JsonArray? = null,
     val projects: List<JsonObject> = emptyList(),
     val workspaces: List<JsonObject> = emptyList(),
     val bots: List<JsonObject> = emptyList(),

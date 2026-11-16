@@ -50,6 +50,16 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     private var crashReload: WKNavigation?
     private var link: LinkState?
     private var linkWatch: Watch?
+    /// An agent's page closes while its compute is gone and opens again
+    /// when it is back (Happy Cloud), following `BrowserAgentCompute`.
+    private var compute = BrowserComputeGate()
+    /// What the compute last said, nil until it said anything.
+    private var computeNow: BrowserCompute?
+    private var computeWatch: Task<Void, Never>?
+    private var computeProbe: Task<Void, Never>?
+    /// Back with its compute, the page's server may still be starting.
+    private var reopenRetry = BrowserReopenRetry()
+    private var reopenRetrying: Task<Void, Never>?
     private let isApp: Bool
     /// Where an app's close button is, as its page is told.
     var appClose = AppPageScripts.Close(corner: .topStart, box: 0, rightToLeft: false)
@@ -126,6 +136,15 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
             linkWatch = session.watchHeader { [weak self] state in self?.linkChanged(state) }
         }
         open()
+        if let session, let agentID, !agentID.isEmpty, artifactID == nil {
+            let changes = BrowserAgentCompute(client: session.client, store: session.store).changes(agentID: agentID)
+            computeWatch = Task { [weak self] in
+                for await change in changes {
+                    guard let self else { return }
+                    computeChanged(change)
+                }
+            }
+        }
     }
 
     override func didMove(toParent parent: UIViewController?) {
@@ -158,6 +177,14 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
                 if let artifactID {
                     // A live artifact opens where it was made, never in a workspace guessed for it.
                     page = try await BrowserPage.live(client: session.client, url: originalURL, artifactID: artifactID)
+                } else if let agentID, !agentID.isEmpty {
+                    // The agent's own network, which is where it ran the server.
+                    let network = BrowserAgentNetwork(client: session.client, agentID: agentID)
+                    _ = try await network.current()
+                    try Task.checkCancellation()
+                    let page = try await BrowserPage.agent(client: session.client, url: originalURL, network: network)
+                    page.refusals.onComputeGone { [weak self] in Task { @MainActor [weak self] in self?.computeGone() } }
+                    self.page = page
                 } else {
                     let workspace = try await findWorkspace(session.client, agentID: agentID)
                     try Task.checkCancellation()
@@ -170,7 +197,7 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
             load(failedURL ?? page.url, in: web)
         } catch {
             guard !Task.isCancelled, !(error is CancellationError) else { return }
-            fail(BrowserProblem.opening(error, link: link), url: originalURL, beforeCommit: false)
+            fail(BrowserProblem.opening(error, link: link), url: failedURL ?? originalURL, beforeCommit: false)
         }
     }
 
@@ -281,6 +308,11 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     // MARK: Failing
 
     private func fail(_ problem: BrowserProblem, url: URL?, beforeCommit: Bool) {
+        // Gone for its compute: the page closes until the compute is back.
+        if problem == .computeDisconnected, computeWatch != nil, !compute.closed {
+            computeGone(at: url)
+            return
+        }
         self.problem = problem
         Analytics.shared.browserLoadFailed(problem)
         failedURL = url ?? failedURL ?? originalURL
@@ -294,9 +326,23 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
             UIView.animate(withDuration: 0.2) { self.failureView.alpha = 1 }
         }
         updateHeader()
+        reopenRetrying?.cancel()
+        if let wait = reopenRetry.failed(problem) {
+            reopenRetrying = Task { [weak self] in
+                try? await Task.sleep(for: wait)
+                guard let self, !Task.isCancelled else { return }
+                // Try Again's load, the tries so far kept.
+                let kept = reopenRetry
+                retry()
+                reopenRetry = kept
+            }
+        }
     }
 
     private func clearFailure() {
+        // Tried again by hand: the compute closes it again if still gone.
+        if compute.closed { compute = BrowserComputeGate(); computeProbe?.cancel() }
+        reopenRetry.end(); reopenRetrying?.cancel()
         problem = nil
         failureView.isHidden = true
         page?.refusals.clear()
@@ -317,6 +363,60 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
         link = state
         // The computer is back: what failed for want of it opens by itself.
         if state == .online, before != .online, problem == .computerUnreachable || problem == .noNetwork { retry() }
+    }
+
+    // MARK: Compute
+
+    private func computeChanged(_ change: BrowserCompute) {
+        computeNow = change
+        switch compute.apply(change) {
+        case .close?: closeForCompute()
+        case .reopen?: reopenForCompute()
+        case nil: break
+        }
+    }
+
+    /// A tunnel was refused for the compute being gone: as its own news.
+    private func computeGone(at url: URL? = nil) {
+        if compute.apply(.detached) == .close { closeForCompute(at: url) }
+    }
+
+    /// The page goes, so nothing in it keeps knocking, and the error page
+    /// says why; its address is kept to open again.
+    private func closeForCompute(at failed: URL? = nil) {
+        let url = failed ?? (problem != nil ? failedURL : web?.url ?? pendingURL)
+        loading?.cancel()
+        web?.stopLoading(); web?.removeFromSuperview(); web = nil; page = nil; observations = []
+        fail(.computeDisconnected, url: url ?? originalURL, beforeCommit: false)
+        probeCompute()
+    }
+
+    private func reopenForCompute() {
+        computeProbe?.cancel()
+        clearFailure()
+        reloadedAfterCrash = false
+        reopenRetry.reopened()
+        open()
+    }
+
+    /// A compute back within its grace sends no news of having gone or
+    /// come back: while it last said it was there, or said nothing, the
+    /// page asks now and then whether a tunnel opens.
+    private func probeCompute() {
+        computeProbe?.cancel()
+        guard let session, let agentID else { return }
+        let network = BrowserAgentNetwork(client: session.client, agentID: agentID)
+        let url = failedURL ?? originalURL
+        computeProbe = Task { [weak self] in
+            var delay = 3.0
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(delay))
+                delay = min(delay * 2, 30)
+                guard let self, !Task.isCancelled, compute.closed else { return }
+                if computeNow == .detached { continue }
+                if await network.answers(url), !Task.isCancelled { computeChanged(.attached) }
+            }
+        }
     }
 
     // MARK: Header
@@ -431,6 +531,7 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     /// The page goes for good: its web view, and with its page the tunnel.
     func close() {
         loading?.cancel(); trickling?.cancel(); linkWatch = nil
+        computeWatch?.cancel(); computeProbe?.cancel(); reopenRetrying?.cancel()
         web?.stopLoading(); web?.removeFromSuperview(); web = nil; page = nil; observations = []
     }
 
@@ -454,6 +555,7 @@ final class BrowserViewController: UIViewController, WKNavigationDelegate, WKUID
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         // A page arrived: whatever failed before it is behind it now.
         if problem != nil { clearFailure() }
+        reopenRetry.end()
         failedURL = nil
         if isRemoteScreen { lockRemoteScreen(webView) }
     }

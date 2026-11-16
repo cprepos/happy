@@ -1,13 +1,17 @@
 package com.slopus.happy.connection
 
+import com.slopus.happy.diagnostics.Timing
 import io.tailcat.ClientConfiguration
+import io.tailcat.ConnectionPath
 import io.tailcat.DERPMapCache
 import io.tailcat.DERPMapCacheEntry
 import io.tailcat.DERPMapProvider
 import io.tailcat.NodePrivateKey
+import io.tailcat.TailcatAddress
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
+import kotlin.concurrent.thread
 import io.tailcat.TailcatClient
 import io.tailcat.TailcatConnection
 import kotlinx.coroutines.Dispatchers
@@ -26,6 +30,9 @@ class TransportResponse(val status: Int, val headers: Map<String, String> = empt
  * id, or the device token.
  */
 interface Transport {
+    /** Best effort: park [count] query connections in the ordinary keepalive pool. */
+    suspend fun warm(count: Int) {}
+
     /** Current app-owned flows and public path data, without connecting or making requests. */
     suspend fun diagnostics(): TransportDiagnostics? = null
 
@@ -111,9 +118,8 @@ interface TransportSocket {
 
 /**
  * [Transport] over tailcat-kotlin: the agent's [TailcatClients] (one
- * client for the event stream, one for queries, up to eight for files and
- * the browser), and a fresh TCP stream to `server.tailcat:<port>` for every
- * HTTP/1.1 request (`Connection: close`), as tailcat-swift is used on iOS.
+ * main client for the event stream and queries, up to three for files and
+ * the browser), with iOS's kept HTTP/1.1 connections per client.
  * A query must be answered within [requestTimeoutMillis]; a file has
  * [fileTimeoutMillis] in all, though any one read or write still fails
  * after [requestTimeoutMillis] of silence. The address is a secret;
@@ -131,17 +137,19 @@ class TailcatTransport internal constructor(
         connectTimeoutMillis: Long = 20_000,
         requestTimeoutMillis: Long = 35_000,
         fileTimeoutMillis: Long = 15 * 60_000,
-    ) : this(port, requestTimeoutMillis, fileTimeoutMillis, { _, key ->
-        TailcatClient.connect(address, tailcatConfiguration(key, connectTimeoutMillis))
+    ) : this(port, requestTimeoutMillis, fileTimeoutMillis, { category, key ->
+        connectTimed(address, tailcatConfiguration(key, connectTimeoutMillis), category)
     })
 
     private val flows = OpenFlows()
     private val owners = java.util.concurrent.ConcurrentHashMap<TailcatClient, OpenFlows.Owner>()
+    private val idle = java.util.concurrent.ConcurrentHashMap<TailcatClient, IdleFlows>()
     private val clients = TailcatClients(
         connect = { category, key ->
             val client = connect(category, key)
             try {
                 owners[client] = flows.owner()
+                idle[client] = IdleFlows()
                 client
             } catch (error: Throwable) {
                 client.close()
@@ -149,6 +157,7 @@ class TailcatTransport internal constructor(
             }
         },
         disconnect = { client ->
+            idle.remove(client)?.shut()
             owners.remove(client)?.close()
             client.close()
         },
@@ -156,15 +165,15 @@ class TailcatTransport internal constructor(
         check = { it.wake() },
     )
 
-    private class OpenFlow(private val stream: TailcatConnection, private val ownership: OpenFlows.Owner.Flow) {
+    private class OpenFlow(private val stream: TailcatConnection, private val ownership: OpenFlows.Owner.Flow) : HttpFlow {
         fun read(maximumBytes: Int) = stream.read(maximumBytes)
-        fun read(maximumBytes: Int, timeoutMillis: Long) = stream.read(maximumBytes, timeoutMillis = timeoutMillis)
+        override fun read(maximumBytes: Int, timeoutMillis: Long) = stream.read(maximumBytes, timeoutMillis = timeoutMillis)
         fun write(bytes: ByteArray) = stream.write(bytes)
-        fun write(bytes: ByteArray, timeoutMillis: Long) = stream.write(bytes, timeoutMillis = timeoutMillis)
-        fun close() = ownership.close()
+        override fun write(bytes: ByteArray, timeoutMillis: Long) = stream.write(bytes, timeoutMillis = timeoutMillis)
+        override fun close() = ownership.close()
 
         /** Lets go of an answer no longer wanted: the flow is reset, so the computer stops sending. [close] would take the rest in and discard it. */
-        fun abort() {
+        override fun abort() {
             try {
                 stream.abort()
             } catch (_: Exception) {
@@ -204,35 +213,20 @@ class TailcatTransport internal constructor(
         headers: Map<String, String>,
         category: RequestCategory,
     ): TransportResponse {
-        val head = TailcatHttp.requestHead(method, path, port, credential, body, headers)
+        val head = TailcatHttp.requestHead(method, path, port, credential, body, headers, close = false, gzip = true)
         val progress = kotlinx.coroutines.currentCoroutineContext()[BodyProgress]
         val lease = clients.lease(category)
+        kotlinx.coroutines.currentCoroutineContext()[ResponseTiming]?.let { timing ->
+            timing.path = pathName(lease.client.path)
+            timing.openFlows = owners.values.sumOf { it.count }
+        }
         val deadline = if (category == RequestCategory.File) fileTimeoutMillis else requestTimeoutMillis
         // In a dead relay even the flow's opening and the head's write hang.
         val watch = lease.watch()
         return try {
             withTimeout(deadline) {
-                runInterruptible(Dispatchers.IO) {
-                    val stream = open(lease.client)
-                    var answered = false
-                    try {
-                        stream.write(head, timeoutMillis = requestTimeoutMillis)
-                        if (body != null) {
-                            if (progress == null) stream.write(body, timeoutMillis = requestTimeoutMillis)
-                            else progress.write(body) { stream.write(it, timeoutMillis = requestTimeoutMillis) }
-                        }
-                        val parser = HttpResponseParser()
-                        while (true) {
-                            val bytes = stream.read(65536, timeoutMillis = requestTimeoutMillis)
-                            if (bytes.isNotEmpty()) lease.heard()
-                            parser.append(bytes, eof = bytes.isEmpty())?.let { answered = true; return@runInterruptible it }
-                        }
-                        @Suppress("UNREACHABLE_CODE") error("unreachable")
-                    } finally {
-                        // Cut off or given up on: the computer stops sending the rest.
-                        if (answered) stream.close() else stream.abort()
-                    }
-                }
+                val pool = idle[lease.client] ?: throw AgentConnectionException(AgentConnectionException.Reason.Unavailable)
+                exchangeHttp(pool, method, head, body, requestTimeoutMillis, progress, lease::heard) { open(lease.client) }
             }
         } catch (e: AgentConnectionException) {
             throw e
@@ -249,6 +243,19 @@ class TailcatTransport internal constructor(
             watch.cancel()
             lease.release()
         }
+    }
+
+    override suspend fun warm(count: Int) {
+        val lease = try { clients.lease(RequestCategory.Query) }
+        catch (error: kotlinx.coroutines.CancellationException) { throw error }
+        catch (_: Exception) { return }
+        try {
+            withTimeout(requestTimeoutMillis) { idle[lease.client]?.warm(count) { open(lease.client) } }
+        } catch (error: kotlinx.coroutines.CancellationException) {
+            if (error !is kotlinx.coroutines.TimeoutCancellationException) throw error
+        } catch (_: Exception) {
+            // A failed warm does not prevent the ordinary request from trying.
+        } finally { lease.release() }
     }
 
     override suspend fun stream(path: String, credential: String, headers: Map<String, String>, silenceMillis: Long): TransportStream {
@@ -376,7 +383,11 @@ class TailcatTransport internal constructor(
      * doesn't answer within two seconds, every direct path is probed and one
      * that stopped answering dropped, and an expired session rekeys.
      */
-    override suspend fun resumed() = each { it.wake() }
+    override suspend fun resumed() {
+        each { idle[it]?.drop(); it.wake() }
+        val main = clients.connected().firstOrNull { it.first != RequestCategory.File }?.second
+        Timing.mark("tailcat.main.woken", "path=${main?.path?.let(::pathName) ?: "none"}")
+    }
 
     /**
      * tailcat-kotlin hears of no network change on its own (tailcat-swift
@@ -404,6 +415,58 @@ class TailcatTransport internal constructor(
             // Serve the first request over DERP while this client's direct path is probed.
             ClientConfiguration(privateKey = key, mapProvider = derpMap, connectTimeoutMillis = connectTimeoutMillis, relayFirst = true)
 
+        private fun pathName(path: ConnectionPath) = if (path is ConnectionPath.Direct) "direct" else "relay"
+
+        /**
+         * [TailcatClient.connect] in HappyTiming: the connect as a span, then
+         * tailcat-kotlin's own startup steps (DERP map, TLS, DERP ready,
+         * WireGuard, meow) from its startup trace, and for the main client
+         * the moment its first direct path takes over from the relay.
+         */
+        @Suppress("INVISIBLE_REFERENCE", "INVISIBLE_MEMBER")
+        private fun connectTimed(address: String, configuration: ClientConfiguration, category: RequestCategory): TailcatClient {
+            val name = if (category == RequestCategory.File) "file" else "main"
+            val trace = io.tailcat.StartupTrace()
+            val span = Timing.begin("tailcat.$name.connect")
+            val client = try {
+                // connect(address) is connectTraced with no trace; tailcat-kotlin keeps the traced one internal.
+                TailcatClient.connectTraced(TailcatAddress.parse(address), configuration, trace)
+            } catch (error: Throwable) {
+                span.end("failed=${error::class.simpleName}")
+                throw error
+            }
+            span.end()
+            // The trace goes on past the connect (disco probes, callMeMaybe, directValidated): the watch below logs the rest as they come.
+            var logged = 0
+            fun logSteps() {
+                val steps = trace.snapshot()
+                steps.drop(logged).forEach { Timing.mark("tailcat.$name.${it.name}", it.value?.let { value -> "value=$value" } ?: "", span.startedAt + it.atMillis) }
+                logged = steps.size
+            }
+            logSteps()
+            if (name == "main") thread(isDaemon = true, name = "happy-timing-path") {
+                Timing.mark("tailcat.main.watching", "path=${pathName(client.path)}")
+                repeat((DIRECT_WATCH_MILLIS / DIRECT_POLL_MILLIS).toInt()) {
+                    val path = try { client.path } catch (error: Exception) {
+                        Timing.mark("tailcat.main.watch_failed", "error=${error::class.simpleName}")
+                        return@thread
+                    }
+                    logSteps()
+                    if (path is ConnectionPath.Direct) {
+                        Timing.mark("tailcat.main.direct", "since_connect=${Timing.now() - span.startedAt}")
+                        return@thread
+                    }
+                    Thread.sleep(DIRECT_POLL_MILLIS)
+                }
+                logSteps()
+                Timing.mark("tailcat.main.relay_only", "watched=$DIRECT_WATCH_MILLIS")
+            }
+            return client
+        }
+
+        private const val DIRECT_WATCH_MILLIS = 20_000L
+        private const val DIRECT_POLL_MILLIS = 25L
+
         /**
          * One provider for the app (tailcat-kotlin's default map,
          * tailcat.dev), so its hour-long cache is shared by every agent.
@@ -411,8 +474,13 @@ class TailcatTransport internal constructor(
          * after the first fetch.
          */
         @Volatile private var derpMap = DERPMapProvider()
+        private var derpMapFile: File? = null
 
+        /** Again with the same [file], nothing changes: the process start's connect and the graph share one provider. */
+        @Synchronized
         fun persistDerpMap(file: File) {
+            if (file == derpMapFile) return
+            derpMapFile = file
             derpMap = DERPMapProvider(cache = FileDerpMapCache(file))
         }
     }
@@ -457,8 +525,12 @@ object TailcatHttp {
     const val PROTOCOL = 35
     const val PROTOCOL_HEADER = "Happy-Protocol"
 
-    /** The request line and headers; refuses anything that could split them. */
-    fun requestHead(method: String, path: String, port: Int, credential: String, body: ByteArray?, headers: Map<String, String>, authority: String = "server.tailcat:$port"): ByteArray {
+    /**
+     * The request line and headers; refuses anything that could split them.
+     * [gzip] asks for a compressed answer, which [HttpResponseParser]
+     * decodes; never on a stream, which is read as it comes.
+     */
+    fun requestHead(method: String, path: String, port: Int, credential: String, body: ByteArray?, headers: Map<String, String>, authority: String = "server.tailcat:$port", close: Boolean = true, gzip: Boolean = false): ByteArray {
         fun unsafe(text: String) = text.contains('\r') || text.contains('\n')
         if (method !in methods || !path.startsWith("/") || path.contains(' ') || unsafe(path) || unsafe(credential) ||
             headers.any { (name, value) -> unsafe(name) || name.contains(':') || unsafe(value) }
@@ -467,9 +539,10 @@ object TailcatHttp {
             .append("$method $path HTTP/1.1\r\n")
             .append("Host: $authority\r\n")
             .append("Authorization: Bearer $credential\r\n")
-            .append("Connection: close\r\n")
+            .append(if (close) "Connection: close\r\n" else "")
             .append("$PROTOCOL_HEADER: $PROTOCOL\r\n")
         if (headers.keys.none { it.equals("Accept", ignoreCase = true) }) head.append("Accept: application/json\r\n")
+        if (gzip && headers.keys.none { it.equals("Accept-Encoding", ignoreCase = true) }) head.append("Accept-Encoding: gzip\r\n")
         head.append("Content-Length: ${body?.size ?: 0}\r\n")
         if (body != null && headers.keys.none { it.equals("Content-Type", ignoreCase = true) }) head.append("Content-Type: application/json\r\n")
         headers.forEach { (name, value) -> head.append("$name: $value\r\n") }
@@ -480,9 +553,44 @@ object TailcatHttp {
 /**
  * Incremental HTTP/1.1 response decoding with strict framing and bounded
  * sizes: any TCP boundaries; length, chunked and close-delimited bodies.
+ * A gzip body is decoded, to at most [limit] bytes.
  */
 class HttpResponseParser(private val limit: Int = 8 * 1024 * 1024) {
     private var data = ByteArray(0)
+    /** Only a whole, self-delimited HTTP/1.1 answer can leave its socket idle. */
+    var reusable = false
+        private set
+
+    private fun completed(status: Int, headers: Map<String, String>, body: ByteArray, exact: Boolean, http11: Boolean): TransportResponse {
+        reusable = exact && http11 && headers["connection"]?.split(',')?.none { it.trim().equals("close", ignoreCase = true) } != false
+        return decoded(status, headers, body)
+    }
+
+    /** [body] as if sent plain: no `content-encoding`, and its `content-length` the decoded body's. */
+    private fun decoded(status: Int, headers: Map<String, String>, body: ByteArray): TransportResponse {
+        val coding = headers["content-encoding"]?.trim()?.lowercase()
+        if (coding == null || coding == "identity" || status == 204 || status == 304) return TransportResponse(status, headers, body)
+        // Nothing asked for any other, so nothing can read it.
+        if (coding != "gzip" && coding != "x-gzip") invalid()
+        val plain = java.io.ByteArrayOutputStream()
+        try {
+            java.util.zip.GZIPInputStream(body.inputStream()).use { gzip ->
+                val buffer = ByteArray(65536)
+                while (true) {
+                    val count = gzip.read(buffer)
+                    if (count < 0) break
+                    // A zip bomb.
+                    if (plain.size() + count > limit) invalid()
+                    plain.write(buffer, 0, count)
+                }
+            }
+        } catch (_: java.io.IOException) {
+            // Truncated or corrupt.
+            invalid()
+        }
+        val plainHeaders = headers - "content-encoding"
+        return TransportResponse(status, if ("content-length" in headers) plainHeaders + ("content-length" to plain.size().toString()) else plainHeaders, plain.toByteArray())
+    }
 
     private fun invalid(): Nothing = throw AgentConnectionException(AgentConnectionException.Reason.InvalidResponse)
 
@@ -500,6 +608,7 @@ class HttpResponseParser(private val limit: Int = 8 * 1024 * 1024) {
         val statusParts = lines.first().split(' ')
         if (statusParts.size < 2 || statusParts[0] !in setOf("HTTP/1.1", "HTTP/1.0")) invalid()
         val status = statusParts[1].toIntOrNull()?.takeIf { it in 200..599 } ?: invalid()
+        val http11 = statusParts[0] == "HTTP/1.1"
         val headers = mutableMapOf<String, String>()
         for (line in lines.drop(1)) {
             val colon = line.indexOf(':').takeIf { it > 0 } ?: invalid()
@@ -508,22 +617,22 @@ class HttpResponseParser(private val limit: Int = 8 * 1024 * 1024) {
             headers[name] = line.substring(colon + 1).trim()
         }
         val body = data.copyOfRange(divider + 4, data.size)
-        if (status == 204 || status == 304) return TransportResponse(status, headers)
+        if (status == 204 || status == 304) return completed(status, headers, ByteArray(0), body.isEmpty(), http11)
         headers["transfer-encoding"]?.let { transfer ->
             if (!transfer.equals("chunked", ignoreCase = true) || "content-length" in headers) invalid()
-            return chunked(status, headers, body, eof)
+            return chunked(status, headers, body, eof, http11)
         }
         headers["content-length"]?.let { length ->
             val count = length.toIntOrNull()?.takeIf { it in 0..limit } ?: invalid()
-            if (body.size >= count) return TransportResponse(status, headers, body.copyOf(count))
+            if (body.size >= count) return completed(status, headers, body.copyOf(count), body.size == count, http11)
             if (eof) invalid()
             return null
         }
         if (body.size > limit) invalid()
-        return if (eof) TransportResponse(status, headers, body) else null
+        return if (eof) decoded(status, headers, body) else null
     }
 
-    private fun chunked(status: Int, headers: Map<String, String>, body: ByteArray, eof: Boolean): TransportResponse? {
+    private fun chunked(status: Int, headers: Map<String, String>, body: ByteArray, eof: Boolean, http11: Boolean): TransportResponse? {
         var cursor = 0
         val decoded = java.io.ByteArrayOutputStream()
         var chunks = 0
@@ -540,10 +649,10 @@ class HttpResponseParser(private val limit: Int = 8 * 1024 * 1024) {
             if (++chunks > 65536) invalid()
             if (count == 0) {
                 if (body.size >= cursor + 2 && body[cursor] == '\r'.code.toByte() && body[cursor + 1] == '\n'.code.toByte()) {
-                    return TransportResponse(status, headers, decoded.toByteArray())
+                    return completed(status, headers, decoded.toByteArray(), body.size == cursor + 2, http11)
                 }
                 val end = indexOf(body, CRLFCRLF, cursor)
-                if (end >= 0 && end + 4 - cursor <= 32768) return TransportResponse(status, headers, decoded.toByteArray())
+                if (end >= 0 && end + 4 - cursor <= 32768) return completed(status, headers, decoded.toByteArray(), body.size == end + 4, http11)
                 if (body.size - cursor > 32768 || eof) invalid()
                 return null
             }

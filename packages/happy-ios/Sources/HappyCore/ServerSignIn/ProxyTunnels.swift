@@ -139,11 +139,15 @@ extension AgentHTTPTransport {
     }
 
     /// A refusal that needs signing in goes up as it is; the daemon's own
-    /// is an ordinary upstream answer; a 5xx or an unreadable status is a
-    /// passing failure; anything else is the edge refusing tunnels.
+    /// is an ordinary upstream answer, or the agent's compute being gone;
+    /// a 5xx or an unreadable status is a passing failure; anything else is
+    /// the edge refusing tunnels.
     static func classify(_ refusal: TunnelRefusal, origin: String, support: TunnelSupport = .shared) -> any Error {
         if refusal.requiresSignIn { return refusal }
-        if refusal.isHappyError { return BrowserError.upstream(refusal.status) }
+        if refusal.isHappyError {
+            if BrowserCompute.gone(status: refusal.status, body: refusal.body) { return BrowserError.computeGone }
+            return BrowserError.upstream(refusal.status)
+        }
         guard TunnelSupport.isDefinitive(status: refusal.status) else {
             return refusal.status >= 500 ? BrowserError.upstream(refusal.status) : BrowserError.unavailable
         }

@@ -121,6 +121,14 @@ public enum BrowserPolicy {
         }
     }
 
+    /// A `networkId` (happy-agent API.md): 1 to 128 lowercase letters and
+    /// digits, plus `-` and `_` after the first. Opaque: never parsed.
+    public static func validNetworkID(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        guard (1...128).contains(bytes.count), (97...122).contains(bytes[0]) || (48...57).contains(bytes[0]) else { return false }
+        return bytes.allSatisfy { (97...122).contains($0) || (48...57).contains($0) || $0 == 45 || $0 == 95 }
+    }
+
     public static func validID(_ value: String) -> Bool {
         guard let first = value.utf8.first, (97...122).contains(first) else { return false }
         return value.utf8.allSatisfy { (97...122).contains($0) || (48...57).contains($0) }
@@ -162,6 +170,13 @@ public enum BrowserError: Error, Equatable, Sendable {
     /// A live artifact's own proxy refused to open: the artifact is gone or
     /// no longer live, or the network it was made on isn't served now.
     case liveUnavailable
+    /// The agent's compute is gone (detached, offline or draining): a
+    /// tunnel refused with one of `BrowserCompute.gone`'s codes.
+    case computeGone
+    /// The network refused the destination as one it doesn't carry
+    /// (`403 destination_not_allowed`): Happy Cloud's tunnels reach only
+    /// the computer's loopback.
+    case outsideNetwork
 }
 
 /// A bounded HTTP head, preserving duplicate response fields (notably Set-Cookie).

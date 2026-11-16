@@ -36,10 +36,8 @@ actor FakeFeedServer: FeedRoutes {
 
     var unread: Int { items.filter(\.open).count }
 
-    func feedCapabilities() async throws -> FeedCapabilities {
-        if away { throw URLError(.cannotConnectToHost) }
-        return FeedCapabilities(feed: capable, subjectFilter: filtering, covers: covers)
-    }
+    /// What its bootstrap's `health` says of the Feed.
+    func capabilities() -> FeedCapabilities { FeedCapabilities(feed: capable, subjectFilter: filtering, covers: covers) }
 
     func feed(before: String?, limit: Int, subjects: [String]?) async throws -> FeedPage {
         try reachable()
@@ -132,6 +130,7 @@ final class FeedLibraryTests: XCTestCase {
     private struct Account {
         let library: FeedLibrary
         let outbox: IntentOutbox
+        let server: FakeFeedServer
     }
 
     /// One launch of an account: its outbox over `storage`, its feed over `keep`.
@@ -143,13 +142,13 @@ final class FeedLibraryTests: XCTestCase {
         delivery.library = library
         await outbox.setOnline(online)
         await library.start()
-        return Account(library: library, outbox: outbox)
+        return Account(library: library, outbox: outbox, server: server)
     }
 
-    /// Connected as the engine connects: the bootstrap's count, then health
-    /// and the newest page on their own task.
+    /// Connected as the engine connects: the bootstrap's count and health,
+    /// then, once home is verified, the newest page on its own task.
     private func connect(_ account: Account, unread: Int?, cursor: String? = nil) async {
-        await account.library.bootstrap(unread: unread, cursor: cursor)
+        await account.library.bootstrap(unread: unread, cursor: cursor, capabilities: await account.server.capabilities())
         await account.library.connected()
     }
 
@@ -379,6 +378,108 @@ final class FeedLibraryTests: XCTestCase {
         XCTAssertFalse(hasMore)
     }
 
+    /// Nothing kept (a first launch): the first page is read as soon as
+    /// the stream's hello and the bootstrap's health have both said there
+    /// is a feed, whichever came second, before home is verified.
+    func testAFeedWithNothingKeptIsReadOnceHelloAndTheBootstrapBothSay() async throws {
+        for helloFirst in [true, false] {
+            let server = FakeFeedServer()
+            await server.seed([Self.item(1), Self.item(2)])
+            let account = await launch(server, keep: MemoryFeedKeep())
+            if helloFirst { await account.library.opened() }
+            else { await account.library.bootstrap(unread: 2, cursor: nil, capabilities: await server.capabilities()) }
+            try await Task.sleep(for: .milliseconds(50))
+            let early = await server.reads
+            XCTAssertEqual(early, [], "one of the two hasn't said yet")
+            if helloFirst { await account.library.bootstrap(unread: 2, cursor: nil, capabilities: await server.capabilities()) }
+            else { await account.library.opened() }
+            try await eventually { await account.library.current.items.count == 2 }
+            let reads = await server.reads
+            XCTAssertEqual(reads.count, 1, "read once")
+        }
+    }
+
+    /// Two bootstraps on the heels of the hello, before the first page's
+    /// read has begun: still one read.
+    func testAFeedFoundTwiceAtOnceIsReadOnce() async throws {
+        let server = FakeFeedServer()
+        await server.seed([Self.item(1), Self.item(2)])
+        let account = await launch(server, keep: MemoryFeedKeep())
+        await account.library.opened()
+        let capabilities = await server.capabilities()
+        await account.library.bootstrap(unread: 2, cursor: nil, capabilities: capabilities)
+        await account.library.bootstrap(unread: 2, cursor: nil, capabilities: capabilities)
+        try await eventually { await account.library.current.items.count == 2 }
+        try await Task.sleep(for: .milliseconds(100))
+        let reads = await server.reads
+        XCTAssertEqual(reads.count, 1)
+    }
+
+    /// Something kept: the newest page waits for home (`connected`).
+    func testAKeptFeedWaitsForHomeForItsNewestPage() async throws {
+        let server = FakeFeedServer()
+        await server.seed([Self.item(1)])
+        let keep = MemoryFeedKeep()
+        let first = await launch(server, keep: keep)
+        await connect(first, unread: 1)
+        try await eventually { await first.library.current.items.count == 1 }
+        await first.library.stop()
+        await server.seed([Self.item(1), Self.item(2)])
+        let account = await launch(server, keep: keep)
+        let before = await server.reads.count
+        await account.library.opened()
+        await account.library.bootstrap(unread: 2, cursor: nil, capabilities: await server.capabilities())
+        try await Task.sleep(for: .milliseconds(100))
+        let after = await server.reads.count
+        XCTAssertEqual(after, before, "kept: nothing read before home")
+        await account.library.connected()
+        let shown = await account.library.current.items.count
+        XCTAssertEqual(shown, 2)
+    }
+
+    /// After the stream's hello and before home is verified, what the
+    /// person does reads: the older page.
+    func testLoadingMoreWorksFromTheStreamsHello() async throws {
+        let server = FakeFeedServer()
+        await server.seed((1...(FeedLibrary.page + 5)).map { Self.item($0) })
+        let account = await launch(server, keep: MemoryFeedKeep())
+        await account.library.opened()
+        await account.library.bootstrap(unread: 0, cursor: nil, capabilities: await server.capabilities())
+        await account.library.refresh()
+        let first = await account.library.current.items.count
+        XCTAssertEqual(first, FeedLibrary.page)
+        await account.library.loadMore()
+        let state = await account.library.current
+        XCTAssertEqual(state.items.count, FeedLibrary.page + 5)
+    }
+
+    /// And Highlights, from a computer that filters.
+    func testHighlightsWorkFromTheStreamsHello() async throws {
+        let server = FakeFeedServer()
+        await server.setFiltering(true)
+        await server.seed([Self.item(1)])
+        let account = await launch(server, keep: MemoryFeedKeep())
+        await account.library.opened()
+        await account.library.bootstrap(unread: 0, cursor: nil, capabilities: await server.capabilities())
+        await account.library.setFilter(.highlights)
+        try await eventually { await server.filters.contains { $0 == FeedFilter.highlights.subjects } }
+    }
+
+    /// What the Feed's rows name is looked up from the stream's hello, as
+    /// they are read, not only once home is verified.
+    func testLookupsReadFromTheStreamsHello() async throws {
+        let routes = LookupRoutes()
+        let lookups = FeedLookups(routes: routes, keep: MemoryFeedKeep())
+        var wanted = FeedLookups.Wanted()
+        wanted.artifacts = ["a1"]
+        await lookups.want(wanted)
+        try await Task.sleep(for: .milliseconds(50))
+        let early = await routes.artifacts
+        XCTAssertEqual(early, [], "no stream yet")
+        await lookups.opened()
+        try await eventually { await routes.artifacts == ["a1"] }
+    }
+
     // MARK: Highlights
 
     /// A computer that filters pages Highlights on its own: only artifact
@@ -511,4 +612,17 @@ final class FeedLibraryTests: XCTestCase {
         let unread = await server.unread
         XCTAssertEqual(unread, 0)
     }
+}
+
+/// Lookups' routes that hear which artifacts were asked for.
+private actor LookupRoutes: FeedLookupRoutes {
+    private(set) var artifacts: [String] = []
+    func agent(_ agentId: String) async throws -> AgentWire.Agent { throw URLError(.badServerResponse) }
+    func teamUsers(_ ids: [String]) async throws -> [TeamUser] { [] }
+    func artifact(_ artifactId: String) async throws -> JSONValue {
+        artifacts.append(artifactId)
+        return ["id": .string(artifactId), "title": "A"]
+    }
+    func todo(_ surfaceId: String, _ todoId: String) async throws -> TodoItem { throw URLError(.badServerResponse) }
+    func place(_ kind: String, _ id: String) async throws -> JSONValue { throw URLError(.badServerResponse) }
 }

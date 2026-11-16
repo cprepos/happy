@@ -137,20 +137,17 @@ fun interface DailyUsageSource {
 
 /**
  * The connection's own `GET /v0/usage/daily`, asked only where its health
- * says it keeps one (`GET /v0/health` → `capabilities.dailyUsage: true`),
+ * says it keeps one (bootstrap `health.capabilities.dailyUsage: true`),
  * as iOS: the route and the flag ship together, so a health without the
- * flag, or without capabilities at all, asks nothing. Health is read once
- * for the source's life, which is the page's while it is open; a health
- * that can't be read gives nothing this time, so what was shown stays, and
- * is read again at the next refresh. A server that sets the flag but answers
+ * flag, or without capabilities at all, asks nothing. Each refresh uses
+ * the session's shared bootstrap health. A server that sets the flag but answers
  * 404 or 501 isn't asked again.
  */
 class LiveDailyUsageSource(private val client: AgentClient) : DailyUsageSource {
     @Volatile private var offered: Boolean? = null
 
     override suspend fun read(days: Int, zone: ZoneId): DailyUsage? {
-        val known = offered ?: health()?.also { offered = it } ?: return null
-        if (!known) return null
+        if (offered == false || health() != true) return null
         return try {
             DailyUsage.parse(client.decode<JsonObject>("GET", "/v0/usage/daily?days=$days&tz=${AgentClient.escape(zone.id)}"))
         } catch (e: CancellationException) {
@@ -166,7 +163,7 @@ class LiveDailyUsageSource(private val client: AgentClient) : DailyUsageSource {
     /** Whether health offers the route; null when health couldn't be read. */
     private suspend fun health(): Boolean? {
         val answer = try {
-            client.decode<JsonObject>("GET", "/v0/health")
+            client.health()
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {

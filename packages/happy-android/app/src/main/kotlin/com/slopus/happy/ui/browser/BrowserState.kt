@@ -10,6 +10,8 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import com.slopus.happy.browser.BrowserCompute
+import com.slopus.happy.browser.BrowserComputeGate
 import com.slopus.happy.browser.BrowserLink
 import com.slopus.happy.browser.BrowserProblem
 import com.slopus.happy.browser.BrowserProgress
@@ -59,6 +61,15 @@ class BrowserState internal constructor() {
     var cantOpen by mutableStateOf<BrowserProblem.Unsupported?>(null)
         internal set
 
+    /** Closed while the agent's compute is gone ([computeChanged]); opened again when it is back. */
+    var computeClosed by mutableStateOf(false)
+        private set
+    /** How long until a page opened again for its compute tries once more ([retryAfterReopen]); null when it won't. */
+    internal var reopenRetryMillis by mutableStateOf<Long?>(null)
+        private set
+    /** Tries made since the compute came back, while its server may still be starting; null once the page loaded or anything else happened. */
+    private var reopenTries: Int? = null
+
     /** The page paints no background of its own and asks for no dark one: it was made on white ([BARE_PAGE]). */
     internal var bare by mutableStateOf(false)
 
@@ -78,6 +89,12 @@ class BrowserState internal constructor() {
     /** The server's edge refuses tunnels (edge SSO): nothing would load, so reloading does nothing. */
     internal var blocked = false
     internal var refusals: BrowserRefusals? = null
+    /** The page follows its agent's compute (Happy Cloud), so a page gone for it closes until it is back. */
+    internal var followsCompute = false
+    /** What the compute last said, null until it said anything. */
+    internal var computeNow: BrowserCompute? = null
+        private set
+    private var compute = BrowserComputeGate()
     internal val start: String? get() = page?.url
     /** The main frame's address being loaded, for failures that don't say. */
     private var pending: String? = null
@@ -222,6 +239,7 @@ class BrowserState internal constructor() {
         if (problem == null) {
             progress = progress.finish()
             failedUrl = null
+            reopenTries = null
         } else {
             progress = progress.hide()
         }
@@ -291,12 +309,31 @@ class BrowserState internal constructor() {
     internal fun opening(): String? = failedUrl ?: start
 
     internal fun fail(problem: BrowserProblem, address: String?) {
+        // Gone for its compute: the page closes until the compute is back.
+        if (problem == BrowserProblem.ComputeDisconnected && followsCompute && !compute.closed) return computeGone(address)
         this.problem = problem
         failedUrl = address ?: failedUrl ?: start
         progress = progress.hide()
         loading = false
         refreshing = false
         navigation()
+        // Back with its compute, the page's server may still be starting: a few more tries, then Try Again.
+        val tries = reopenTries
+        if (problem == BrowserProblem.ServerNotResponding && tries != null && tries < BrowserSpec.REOPEN_RETRY_MILLIS.size) {
+            reopenTries = tries + 1
+            reopenRetryMillis = BrowserSpec.REOPEN_RETRY_MILLIS[tries]
+        } else {
+            reopenTries = null
+            reopenRetryMillis = null
+        }
+    }
+
+    /** [reopenRetryMillis] passed: the page that failed, once more. */
+    internal fun retryAfterReopen() {
+        if (reopenRetryMillis == null) return
+        val tries = reopenTries
+        retry()
+        reopenTries = tries
     }
 
     internal fun linkChanged(next: BrowserLink?) {
@@ -311,8 +348,48 @@ class BrowserState internal constructor() {
     }
 
     private fun clearFailure() {
+        // Tried again by hand: the compute closes it again if still gone.
+        if (compute.closed) {
+            compute = BrowserComputeGate()
+            computeClosed = false
+        }
         problem = null
         refusals?.clear()
+        reopenTries = null
+        reopenRetryMillis = null
+    }
+
+    /** The agent's compute changed ([com.slopus.happy.browser.browserAgentCompute], or a probe found it back). */
+    internal fun computeChanged(change: BrowserCompute) {
+        computeNow = change
+        when (compute.apply(change)) {
+            BrowserComputeGate.Action.Close -> closeForCompute(null)
+            BrowserComputeGate.Action.Reopen -> {
+                // The gate is open again already, so clearFailure() wouldn't say so: the probe stops here.
+                computeClosed = false
+                clearFailure()
+                reloadedAfterCrash = false
+                progress = progress.begin()
+                attempt++
+                reopenTries = 0
+            }
+            null -> {}
+        }
+    }
+
+    /** A tunnel was refused for the compute being gone: as its own news. */
+    internal fun computeGone(address: String? = null) {
+        if (compute.apply(BrowserCompute.Detached) == BrowserComputeGate.Action.Close) closeForCompute(address)
+    }
+
+    /** The page goes, so nothing in it keeps knocking, and the error page says why; its address is kept to open again. */
+    private fun closeForCompute(address: String?) {
+        val at = address ?: (if (problem != null) failedUrl else null) ?: url ?: pending ?: start
+        web?.stopLoading()
+        // No page: its WebView and its proxy page go, and [attempt] prepares a new one.
+        page = null
+        computeClosed = true
+        fail(BrowserProblem.ComputeDisconnected, at)
     }
 
     companion object {

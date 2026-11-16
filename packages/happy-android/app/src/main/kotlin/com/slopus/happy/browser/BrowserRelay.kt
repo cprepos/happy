@@ -5,6 +5,11 @@ import com.slopus.happy.connection.ChunkedDecoder
 import com.slopus.happy.connection.TransportSocket
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -41,6 +46,57 @@ internal class LocalSocket(private val socket: Socket) : TransportSocket {
         } catch (_: Exception) {
             // Already gone.
         }
+    }
+}
+
+/**
+ * A page's connection to the proxy, read ahead by one reader of its own so
+ * that waiting for it can be given up without closing it: [LocalSocket]'s
+ * reads close the socket when cancelled. [input] waits for bytes or the
+ * end without taking them, so an answer can watch for a page that went
+ * away and still leave its next request whole.
+ */
+internal class PageConnection(private val socket: TransportSocket, scope: CoroutineScope) : TransportSocket {
+    private class Buffer(val bytes: ByteArray, val ended: Boolean)
+
+    private val state = MutableStateFlow(Buffer(ByteArray(0), false))
+    private val lock = Mutex()
+    private val reader = scope.launch {
+        try {
+            while (true) {
+                // Read ahead at most this much: an upload waits for its tunnel.
+                state.first { it.bytes.size < 262_144 }
+                val bytes = socket.read(65536)
+                lock.withLock { state.value = Buffer(state.value.bytes + bytes, bytes.isEmpty()) }
+                if (bytes.isEmpty()) return@launch
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            lock.withLock { state.value = Buffer(state.value.bytes, true) }
+        }
+    }
+
+    override val authority: String get() = socket.authority
+
+    override suspend fun read(maximumBytes: Int): ByteArray {
+        input()
+        return lock.withLock {
+            val buffered = state.value
+            val taken = buffered.bytes.copyOf(minOf(maximumBytes, buffered.bytes.size))
+            state.value = Buffer(buffered.bytes.copyOfRange(taken.size, buffered.bytes.size), buffered.ended)
+            taken
+        }
+    }
+
+    /** Until the page sends something or goes away; true when it sent something. */
+    suspend fun input(): Boolean = state.first { it.bytes.isNotEmpty() || it.ended }.bytes.isNotEmpty()
+
+    override suspend fun write(bytes: ByteArray) = socket.write(bytes)
+
+    override fun close() {
+        reader.cancel()
+        socket.close()
     }
 }
 
@@ -122,8 +178,13 @@ object BrowserRelay {
         }
     }
 
-    /** Both ways until either side ends or fails; then both close, which wakes the other. */
+    /**
+     * Both ways until either side ends or fails; then both close, which
+     * wakes the other. A side closed for the agent's compute being gone
+     * ([BrowserException.Kind.ComputeGone]) is thrown once both are closed.
+     */
     suspend fun duplex(first: TransportSocket, second: TransportSocket) {
+        var gone: BrowserException? = null
         try {
             coroutineScope {
                 val done = CompletableDeferred<Unit>()
@@ -133,8 +194,9 @@ object BrowserRelay {
                             pipe(from, to)
                         } catch (e: CancellationException) {
                             throw e
-                        } catch (_: Exception) {
+                        } catch (e: Exception) {
                             // A failed side ends the relay as an ended one does.
+                            if (e is BrowserException && e.kind == BrowserException.Kind.ComputeGone) gone = e
                         }
                         done.complete(Unit)
                     }
@@ -144,6 +206,7 @@ object BrowserRelay {
                 second.close()
                 ways.forEach { it.cancel() }
             }
+            gone?.let { throw it }
         } finally {
             first.close()
             second.close()

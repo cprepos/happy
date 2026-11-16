@@ -16,6 +16,8 @@ import com.slopus.happy.connection.TransportStream
 import kotlinx.serialization.DeserializationStrategy
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -43,6 +45,7 @@ class AgentClient private constructor(
     private val link: suspend () -> Link,
     /** To a Happy Cloud server: no folders, and the web through an agent's network ([com.slopus.happy.browser.browserNetwork]). */
     val cloud: Boolean = false,
+    private val beforeHealth: (suspend () -> Boolean)? = null,
 ) {
     /**
      * The transport and the bearer it is authorized with. A team server
@@ -63,7 +66,7 @@ class AgentClient private constructor(
     constructor(transport: Transport, token: String, cloud: Boolean = false) : this(Link(transport, token).let { fixed -> { fixed } }, cloud)
 
     companion object {
-        internal fun lazy(cloud: Boolean = false, link: suspend () -> Link) = AgentClient(link, cloud)
+        internal fun lazy(cloud: Boolean = false, beforeHealth: (suspend () -> Boolean)? = null, link: suspend () -> Link) = AgentClient(link, cloud, beforeHealth)
 
         /** How every agent answer is read: unknown keys are skipped, as the wire grows. */
         val json = Json {
@@ -94,6 +97,7 @@ class AgentClient private constructor(
      * Sends a request as [category]. A 401 is [AgentConnectionException.Reason.Revoked];
      * an unreachable agent [AgentConnectionException.Reason.Unavailable];
      * any other status but 2xx and 304 an [AgentApiException].
+     * [onAsked] marks handoff to the transport, before its reply or socket writes.
      */
     suspend fun send(
         method: String,
@@ -101,10 +105,15 @@ class AgentClient private constructor(
         body: JsonElement? = null,
         headers: Map<String, String> = emptyMap(),
         category: RequestCategory = RequestCategory.Query,
+        onAsked: () -> Unit = {},
     ): TransportResponse {
         val link = link()
         val bytes = body?.let { json.encodeToString(JsonElement.serializer(), it).toByteArray(Charsets.UTF_8) }
-        return check(link, authorized(link) { token -> link.transport.request(method, path, token, bytes, headers, category) })
+        return check(link, authorized(link) { token ->
+            observeAsk?.invoke(method, path)
+            onAsked()
+            link.transport.request(method, path, token, bytes, headers, category)
+        })
     }
 
     /** Sends [bytes] as they are (an image), with their Content-Type in [headers]: a [RequestCategory.File]. */
@@ -175,10 +184,23 @@ class AgentClient private constructor(
         }
     }
 
+    /** Opens ordinary query connections without delaying bootstrap or delivery. */
+    suspend fun warm(count: Int, onAsked: () -> Unit = {}) {
+        val transport = link().transport
+        observeAsk?.invoke("WARM", count.toString())
+        onAsked()
+        transport.warm(count)
+    }
+
+    /** Observes the handoff boundary, independently of a transport's scheduling or socket writes. */
+    @Volatile internal var observeAsk: ((method: String, path: String) -> Unit)? = null
+
     /** `GET /v0/events/stream` from [after]; the stream's status is checked. */
-    suspend fun events(after: String?): TransportStream {
+    suspend fun events(after: String?, onAsked: () -> Unit = {}): TransportStream {
         val link = link()
         val headers = after?.let { mapOf("Last-Event-ID" to it) } ?: emptyMap()
+        observeAsk?.invoke("STREAM", "/v0/events/stream")
+        onAsked()
         var stream = link.transport.stream("/v0/events/stream", link.token, headers)
         if (stream.status == 401 && link.renew != null) {
             val refused = try {
@@ -217,8 +239,27 @@ class AgentClient private constructor(
     /** The transport and token, the credentials read and the link made on the first call. */
     internal suspend fun resolve(): Link = link()
 
-    /** Health's `capabilities.webSocketTunnels`, once known ([noteHealth], or read by [webSocketTunnel]). */
+    /** Bootstrap health's `capabilities.webSocketTunnels`, once known through [noteHealth]. */
     @Volatile private var webSocketTunnels: Boolean? = null
+    @Volatile private var bootstrapHealth = JsonObject(emptyMap())
+    @Volatile private var healthKnown = false
+
+    suspend fun health(): JsonObject {
+        return if (beforeHealth?.invoke() ?: healthKnown) bootstrapHealth
+        else decode<JsonObject>("GET", "/v0/health").also(::noteHealth)
+    }
+
+    /** A screen needs capabilities now, even if no home bootstrap will run. */
+    suspend fun healthNow(): JsonObject = bootstrapHealth.takeIf { it.isNotEmpty() }
+        ?: decode<JsonObject>("GET", "/v0/health").also(::noteHealth)
+
+    fun noteHealth(health: JsonObject) {
+        bootstrapHealth = health
+        healthKnown = true
+        val capabilities = health["capabilities"] as? JsonObject
+        webSocketTunnels = capabilities?.get("webSocketTunnels") == JsonPrimitive(true)
+        search = capabilities?.get("search") == JsonPrimitive(true)
+    }
     private val blocked = MutableStateFlow(false)
 
     /**
@@ -255,7 +296,7 @@ class AgentClient private constructor(
     suspend fun webSocketTunnel(connectPath: String): TransportSocket? {
         val link = link()
         if (!link.transport.overHttps()) return null
-        val supported = webSocketTunnels ?: AgentIdentity.webSocketTunnels(requester, link.oauth).also { webSocketTunnels = it }
+        val supported = webSocketTunnels ?: (health()["capabilities"] as? JsonObject)?.get("webSocketTunnels").let { it == JsonPrimitive(true) }
         if (!supported) return null
         val path = "$connectPath/websocket"
         return try {

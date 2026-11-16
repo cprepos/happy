@@ -73,6 +73,8 @@ object Wire {
         tasks: List<JsonObject> = emptyList(), memberships: List<JsonObject> = emptyList(), cursor: String = "c0",
         surfaces: List<JsonObject>? = null, userSettings: List<JsonObject>? = null,
     ) = buildJsonObject {
+        put("health", buildJsonObject { put("ready", true); put("version", buildJsonObject { put("protocol", 30); put("daemon", "1.0") }) })
+        put("config", buildJsonObject { put("node", buildJsonObject { put("name", "Studio"); put("avatar", kotlinx.serialization.json.JsonNull) }) })
         put("projects", JsonArray(projects)); put("workspaces", JsonArray(workspaces)); put("bots", JsonArray(bots))
         put("tasks", JsonArray(tasks)); put("taskMemberships", JsonArray(memberships)); put("cursor", cursor)
         if (surfaces != null) put("surfaces", JsonArray(surfaces))
@@ -112,6 +114,7 @@ object Wire {
 class FakeAgent(var bootstrap: JsonObject = Wire.bootstrap(), var name: String = "Studio") : Transport {
     val calls = java.util.concurrent.CopyOnWriteArrayList<String>()
     val streamCursors = java.util.concurrent.CopyOnWriteArrayList<String?>()
+    val streamReads = java.util.concurrent.atomic.AtomicInteger()
     var frames = Channel<String>(Channel.UNLIMITED)
     var revoked = false
     var resources = mutableMapOf<String, JsonObject>()
@@ -135,6 +138,7 @@ class FakeAgent(var bootstrap: JsonObject = Wire.bootstrap(), var name: String =
         var headSent = false
         return TransportStream.open(object : ByteSource {
             override suspend fun read(): ByteArray {
+                streamReads.incrementAndGet()
                 if (!headSent) {
                     headSent = true
                     return "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n".toByteArray()
