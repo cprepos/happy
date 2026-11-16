@@ -90,14 +90,22 @@ test('scrubbing: typed text, values, queries and tool arguments never reach the 
     const s = approvalSummary(approvalRecord('a1', 'sess1'));
     const all = JSON.stringify(s);
     assert.equal(s.kind, 'account_change');
-    assert.equal(s.summary, 'The agent wants to change account settings.');
+    // The action's own reason is the headline, scrubbed; no "Agent says" line.
+    assert.equal(s.summary, 'type ••• into the new password field');
+    assert.equal(s.reason, s.summary);
+    assert.deepEqual(s.details, ['Type text (19 characters, hidden)', 'Page: accounts.example.com/settings/password']);
+    const bare = approvalSummary({ kind: 'account_change', origin: 'action', action: { action: 'type', text: 'x' } });
+    assert.equal(bare.summary, 'The agent wants to change account settings.', 'no reason: the generic summary');
+    assert.equal(bare.reason, null);
     assert.ok(!all.includes(SECRET_TEXT), 'never the typed text');
     assert.ok(!all.includes('session=xyz'), 'never a query string');
     assert.ok(s.details.includes('Type text (19 characters, hidden)'));
     assert.ok(s.details.includes('Page: accounts.example.com/settings/password'));
 
     const tool = approvalSummary({ kind: 'account_change', origin: 'tool_call', reason: 'Approve browser.set_cookies with {"value":"sekrit-cookie"}', action: { action: 'request_human_takeover', text: 'browser.set_cookies sha256:0123' } }, 'https://x.example/a?b=c');
-    assert.deepEqual(tool.details, ['Set cookies in the browser', 'The agent didn\'t say why', 'Page: x.example/a']);
+    assert.deepEqual(tool.details, ['Set cookies in the browser', 'Page: x.example/a']);
+    assert.equal(tool.summary, 'The agent wants to change account settings.');
+    assert.equal(tool.reason, null, 'the controller\'s argument preview is never the reason');
     assert.equal(tool.code, null);
     assert.ok(!JSON.stringify(tool).includes('sekrit'), 'never a tool argument preview');
 
@@ -419,7 +427,7 @@ test('yolo: an approval is approved at once with the yolo note, recorded (last 5
     assert.equal(s.approval, null, 'never shown');
     assert.deepEqual(s.auto_approved.map((e) => e.id), ['y6', 'y5', 'y4', 'y3', 'y2']);
     assert.deepEqual(Object.keys(s.auto_approved[0]).sort(), ['at', 'id', 'summary']);
-    assert.equal(s.auto_approved[0].summary, 'The agent wants to change account settings. Agent says: type ••• into the new password field');
+    assert.equal(s.auto_approved[0].summary, 'type ••• into the new password field');
     assert.ok(!JSON.stringify(s).includes(SECRET_TEXT));
     assert.ok(logs.some((l) => /auto-approved y6/.test(l)));
 
@@ -479,9 +487,10 @@ test('mcp: with yolo on, the held action runs again at once without waiting for 
 test('summary: a tool call shows the bridge\'s reason and, for eval_js only, the scrubbed script', () => {
     const code = `// read the table\nconst t = document.querySelector('table');\nconst password = "${SECRET_TEXT}";\nreturn t.innerText;`;
     const s = approvalSummary(EVAL_RECORD('e1'), null, { reason: `Read the monthly cost table, token=${SECRET_TEXT}`, code });
+    assert.equal(s.summary, 'Read the monthly cost table, token=•••');
+    assert.equal(s.reason, s.summary);
     assert.deepEqual(s.details, [
-        'Run JavaScript in the page',
-        'Agent says: Read the monthly cost table, token=•••',
+        'Runs a script on this page',
         'Page: billing.example.com/home',
     ]);
     assert.match(s.code, /^\/\/ read the table\nconst t = document\.querySelector\('table'\);\n/, 'line breaks kept');
@@ -490,12 +499,16 @@ test('summary: a tool call shows the bridge\'s reason and, for eval_js only, the
     assert.ok(!JSON.stringify(s).includes('k='), 'never the controller\'s argument preview');
     const long = approvalSummary(EVAL_RECORD('e2'), null, { reason: 'x', code: 'a();\n'.repeat(1000) });
     assert.ok(long.code.length <= 1500 && long.code.endsWith('…'));
-    // Another tool: the reason, but never a code preview; no reason: says so.
+    // Another tool: the reason, but never a code preview; no reason: the generic summary.
     const cookie = { ...EVAL_RECORD('e3'), action: { action: 'request_human_takeover', text: 'browser.set_cookies sha256:01' } };
     const c = approvalSummary(cookie, null, { reason: 'Keep the session', code: 'x' });
     assert.equal(c.code, null);
-    assert.equal(c.details[1], 'Agent says: Keep the session');
-    assert.equal(approvalSummary(EVAL_RECORD('e4')).details[1], "The agent didn't say why");
+    assert.equal(c.summary, 'Keep the session');
+    assert.deepEqual(c.details, ['Set cookies in the browser', 'Page: billing.example.com/home']);
+    const none = approvalSummary(EVAL_RECORD('e4'));
+    assert.equal(none.summary, 'The agent wants to change the page.');
+    assert.equal(none.reason, null);
+    for (const x of [s, c, none]) assert.ok(!x.details.some((d) => /Agent says|didn't say why/.test(d)), 'no "Agent says" or "didn\'t say why" line');
     // An action's own approval never takes a code preview either.
     assert.equal(approvalSummary(approvalRecord('e5', 'sess1'), null, { code: 'x' }).code, null);
 });
@@ -531,7 +544,8 @@ test('mcp: tools/list adds the reason to eval_js (required) and the other tool-c
     const ev = tools.find((t) => t.name === 'browser_eval_js');
     assert.deepEqual(ev.inputSchema.required, ['expression', 'reason']);
     assert.equal(ev.inputSchema.properties.reason.maxLength, 300);
-    assert.match(ev.inputSchema.properties.reason.description, /what this does and why/);
+    assert.match(ev.inputSchema.properties.reason.description, /What will happen/);
+    assert.match(ev.inputSchema.properties.reason.description, /Download CSV/);
     assert.equal(ev.inputSchema.additionalProperties, false);
     assert.match(ev.description, /reason/);
     const ck = tools.find((t) => t.name === 'browser_set_cookies');
@@ -540,16 +554,18 @@ test('mcp: tools/list adds the reason to eval_js (required) and the other tool-c
     assert.equal(tools.find((t) => t.name === 'browser_execute_action').inputSchema.properties.reason, undefined);
 });
 
-test('mcp: eval_js with a reason shows "Agent says" and the code; deny stops it', async () => {
+test('mcp: eval_js with a reason leads with it (summary === reason) and shows the code; deny stops it', async () => {
     const { id } = await link();
     const h = mcpHarness();
     const expression = `(() => { const token = "${SECRET_TEXT}"; return document.title; })()`;
     const pending = h.call(1, 'browser_eval_js', { session_id: 'sess1', expression, reason: 'Read the page title' });
     const a = await untilPending(id);
-    assert.deepEqual(Object.keys(a).sort(), ['asked_at', 'code', 'details', 'id', 'kind', 'summary']);
+    assert.deepEqual(Object.keys(a).sort(), ['asked_at', 'code', 'details', 'id', 'kind', 'reason', 'summary']);
     assert.equal(a.id, 'apE');
-    assert.ok(a.details.includes('Agent says: Read the page title'));
-    assert.ok(a.details.includes('Run JavaScript in the page'));
+    assert.equal(a.reason, 'Read the page title');
+    assert.equal(a.summary, a.reason);
+    assert.deepEqual(a.details, ['Runs a script on this page', 'Page: billing.example.com/home']);
+    assert.ok(!JSON.stringify(a).includes('k='), 'never the controller\'s argument preview');
     assert.match(a.code, /return document\.title/);
     assert.ok(!JSON.stringify(a).includes(SECRET_TEXT));
     await post(`/live/${id}/deny`, { approval_id: 'apE' });
@@ -569,16 +585,16 @@ test('approval text: kept with its approval id, set once, never from another ses
     await api('/api/approval', { session_id: 'sess1', approval_id: 't1', reason: 'Read the table', code: 'a()' });
     await api('/api/approval', { session_id: 'sess1', approval_id: 't1', reason: 'changed', code: 'b()' });
     const a = (await state(id)).approval;
-    assert.ok(a.details.includes('Agent says: Read the table'));
+    assert.equal(a.summary, 'Read the table');
+    assert.equal(a.reason, 'Read the table');
     assert.equal(a.code, 'a()');
-    // Non-string text is ignored.
+    // Non-string text is ignored: an eval_js left with no reason is refused, never shown.
     client.approvals.set('t2', EVAL_RECORD('t2'));
     client.approvals.get('t1').status = 'rejected';
-    await api('/api/approval', { session_id: 'sess1', approval_id: 't2', reason: { x: 1 }, code: 5 });
-    const b = (await state(id)).approval;
-    assert.equal(b.id, 't2');
-    assert.equal(b.code, null);
-    assert.ok(b.details.includes("The agent didn't say why"));
+    const r2 = await (await api('/api/approval', { session_id: 'sess1', approval_id: 't2', reason: { x: 1 }, code: 5 })).json();
+    assert.equal(r2.refused, true);
+    assert.equal((await state(id)).approval?.id === 't2', false);
+    assert.equal(client.approvals.get('t2').status, 'rejected');
 });
 
 test('mcp: browser yolo still runs eval_js at once, and its record carries the reason', async () => {
@@ -592,5 +608,70 @@ test('mcp: browser yolo still runs eval_js at once, and its record carries the r
     assert.equal(evals.length, 2);
     assert.equal(evals[1].args.approval_id, 'apE');
     assert.ok(!('reason' in evals[1].args));
-    assert.equal((await state(id)).auto_approved[0].summary, 'The agent wants to change the page. Agent says: Work out the answer');
+    assert.equal((await state(id)).auto_approved[0].summary, 'Work out the answer');
+});
+
+// ── The bridge refuses a script with no reason: never shown, never pending, yolo or not ──
+for (const yolo of [false, true]) {
+    test(`server: a reasonless eval_js approval is refused and never pending (browser yolo ${yolo ? 'on' : 'off'})`, async () => {
+        const { id } = await link();
+        if (yolo) await post(`/live/${id}/auto`, { on: true });
+        for (const [aid, extra] of [['n1', {}], ['n2', { reason: '' }], ['n3', { reason: '   \n ' }], ['n4', { reason: 7, code: 'x()' }]]) {
+            client.approvals.set(aid, EVAL_RECORD(aid));
+            const r = await api('/api/approval', { session_id: 'sess1', approval_id: aid, ...extra });
+            assert.equal(r.status, 200);
+            const body = await r.json();
+            assert.equal(body.refused, true);
+            assert.equal(body.approval, null);
+            assert.equal(body.approval_status, 'denied');
+            assert.equal(body.auto_approved, undefined, 'never auto-approved');
+            assert.equal(body.message, 'Nothing was run: say in plain words what this script will do (the reason argument: what it clicks, changes or reads, on which page), then call again.');
+            assert.equal(client.approvals.get(aid).status, 'rejected', 'denied on the controller');
+            const s = await state(id);
+            assert.equal(s.approval, null, 'never shown');
+            assert.ok(!s.auto_approved.some((e) => e.id === aid));
+            // An old MCP server, which never sends a reason, waits on it next: denied at once.
+            const w = await (await api('/api/approval/wait', { id, approval_id: aid, wait_s: 5 })).json();
+            assert.equal(w.approval_status, 'denied');
+        }
+        assert.deepEqual(client.calls.approve, []);
+        // Not eval_js: another tool's approval with no reason is still shown (or yolo-approved).
+        client.approvals.set('k1', { ...EVAL_RECORD('k1'), action: { action: 'request_human_takeover', text: 'browser.set_cookies sha256:01' } });
+        const k = await (await api('/api/approval', { session_id: 'sess1', approval_id: 'k1' })).json();
+        assert.equal(k.refused, undefined);
+        if (yolo) assert.equal(k.auto_approved, true);
+        else assert.equal(k.approval.id, 'k1');
+    });
+}
+
+test('server: a reasonless eval_js does not disturb the approval already shown', async () => {
+    const { id } = await link();
+    client.approvals.set('q1', EVAL_RECORD('q1'));
+    // A second, reasonless eval_js is refused on its own; the one shown stays.
+    await api('/api/approval', { session_id: 'sess1', approval_id: 'q1', reason: 'Read the table' });
+    client.approvals.set('q2', EVAL_RECORD('q2'));
+    await api('/api/approval', { session_id: 'sess1', approval_id: 'q2' });
+    assert.equal((await state(id)).approval.id, 'q1', 'the shown approval stays');
+    assert.equal(client.approvals.get('q1').status, 'pending');
+});
+
+test('mcp: the bridge\'s refusal reaches the agent as "nothing was run", and nothing runs', async () => {
+    const { id } = await link();
+    const h = mcpHarness({ approvalWaitS: 1 });
+    // A reason that scrubs to nothing passes the MCP check but not the bridge's.
+    const res = await h.call(1, 'browser_eval_js', { session_id: 'sess1', expression: '1', reason: '\u0001\u0002' });
+    assert.equal(res.result.isError, true);
+    assert.equal(res.result.structuredContent.status, 'refused');
+    assert.match(res.result.structuredContent.note, /^Nothing was run: say in plain words what this script will do/);
+    assert.equal(h.upstream.calls.filter((c) => c.name === 'browser.eval_js').length, 1, 'never run again with an approval');
+    assert.equal((await state(id)).approval, null);
+    assert.equal(client.approvals.get('apE').status, 'rejected');
+});
+
+test('page: the live view leads with the agent\'s reason under "The agent says it will:"', async () => {
+    const { id } = await link();
+    const page = await (await fetch(`${base}/live/${id}`)).text();
+    assert.match(page, /<p id="approval-label" hidden>The agent says it will:<\/p>/);
+    assert.match(page, /\$\('approval-title'\)\.textContent = said \|\| a\.summary/);
+    assert.match(page, /<details id="approval-code-box" hidden><summary>Code<\/summary>/);
 });
