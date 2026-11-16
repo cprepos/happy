@@ -211,9 +211,11 @@ final class HostedLiveBrowserWaitTests: XCTestCase {
         clear(items.approvalBar, "approval, keyboard up")
         // Details open: taller, and still over the key row and the bar.
         let closed = items.approvalBar.frame.height
-        items.approvalBar.show(LiveBrowserState.Approval(id: "a2", summary: "The agent wants to change the page.",
-                                                         details: ["Run JavaScript in the page", "Agent says: Read the order total", "Page: shop.example.com/cart"],
-                                                         code: (0..<30).map { "const line\($0) = \($0);" }.joined(separator: "\n")))
+        let said = "Read the order total from the cart, every line of it, so it can be checked against the quote before anything is paid"
+        items.approvalBar.show(LiveBrowserState.Approval(id: "a2", summary: said,
+                                                         details: ["Runs a script on this page", "Page: shop.example.com/cart"],
+                                                         code: (0..<30).map { "const line\($0) = \($0);" }.joined(separator: "\n"), reason: said))
+        clear(items.approvalBar, "the reason closed, keyboard up")
         items.approvalBar.setExpanded(true)
         clear(items.approvalBar, "details open, keyboard up")
         XCTAssertGreaterThan(items.approvalBar.frame.height, closed)

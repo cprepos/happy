@@ -147,13 +147,25 @@ extension Strings {
         static let approvalFailed = "Couldn’t Send Your Answer"
         /// `/approve` or `/deny` answered 409: decided elsewhere, or the browser closed.
         static let approvalGone = "This request is no longer waiting."
-        /// The bar that asks, under the picture or over the composer: the
-        /// summary, then the agent's reason where it gave one.
-        static func approvalBar(_ summary: String, reason: String? = nil) -> String {
-            ([approvalTitle, summary] + (reason.map { [$0] } ?? [])).joined(separator: " ")
+        /// Over the bar's title where it is the agent's own words.
+        static let approvalSays = "The agent says it will:"
+        /// What the agent says it will do, as the alert and VoiceOver lead
+        /// with it; the bridge's summary where it said nothing.
+        static func approvalLead(_ approval: LiveBrowserState.Approval) -> String {
+            approval.reason.map { "\(approvalSays) \($0)" } ?? approval.summary
         }
-        /// The bar's button that shows every line and the script, and the
-        /// one that folds them away again.
+        /// The bar that asks, under the picture or over the composer, as
+        /// VoiceOver reads it: what the agent says it will do, what kind of
+        /// thing it is, the page, then the question.
+        static func approvalBar(_ approval: LiveBrowserState.Approval) -> String {
+            ([approvalLead(approval)] + [approval.kindLine, approval.page].compactMap { $0 } + [approvalTitle]).joined(separator: " ")
+        }
+        /// The fallback alert's message: the same lead, then every line.
+        static func approvalMessage(_ approval: LiveBrowserState.Approval) -> String {
+            ([approvalLead(approval)] + approval.details).joined(separator: "\n")
+        }
+        /// The bar's button that shows the script and any other lines, and
+        /// the one that folds them away again.
         static let approvalDetails = "Details"
         static let approvalHide = "Hide"
         /// The script's block under Details, as VoiceOver reads it.

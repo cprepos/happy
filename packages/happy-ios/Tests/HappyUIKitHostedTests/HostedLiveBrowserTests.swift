@@ -1354,20 +1354,23 @@ final class HostedLiveBrowserTests: XCTestCase {
 }
 
 extension HostedLiveBrowserTests {
-    /// A script's approval: the bar says why and where, closed; Details
-    /// shows every line and the script, monospaced, and Hide folds them
-    /// away. In the chat and floating over the full screen alike.
+    /// A script's approval: closed, the bar says what the agent says it
+    /// will do (four lines at most), what kind of thing it is and the
+    /// page, with no tap; Details shows the script and the other lines,
+    /// monospaced, and Hide folds them away. In the chat and floating over
+    /// the full screen alike.
     func testTheBarSaysWhyAndDetailsShowsTheScript() async throws {
         let root = UIViewController()
         let window = hostedKeyWindow(in: try await hostedActiveScene(), root: root)
         defer { window.isHidden = true }
         let bar = LiveBrowserApprovalBar()
         root.view.addSubview(bar)
-        let reason = "Agent says: Read the monthly cost table from the Billing page, every row of it, so the totals can be compared with last month's"
+        let reason = "Read the monthly cost table from the Billing page, every row of it, so the totals can be compared with last month's, "
+            + "then click Download CSV to save October's cost report, without changing any setting, filter or date range on the page"
         let script = (0..<40).map { "const row\($0) = document.querySelector('#cost-\($0)').textContent;" }.joined(separator: "\n")
-        let approval = LiveBrowserState.Approval(id: "e1", summary: "The agent wants to change the page.",
-                                                 details: ["Run JavaScript in the page", reason, "Page: console.example.com/billing/home"],
-                                                 code: script)
+        let approval = LiveBrowserState.Approval(id: "e1", summary: reason,
+                                                 details: ["Runs a script on this page", "Page: console.example.com/billing/home", "Waits up to 10 seconds"],
+                                                 code: script, reason: reason)
         bar.show(approval)
         func find(_ id: String) throws -> UIView { try XCTUnwrap(Self.view(bar, id), id) }
         let size = root.view.bounds.size, safe = LayoutInsets(root.view.safeAreaInsets)
@@ -1382,14 +1385,26 @@ extension HostedLiveBrowserTests {
             bar.place(layout)
             bar.layoutIfNeeded()
             let what = "\(layout.mode)"
-            XCTAssertEqual(bar.accessibilityLabel, Strings.LiveBrowser.approvalBar(approval.summary, reason: reason), what)
-            let lead = try XCTUnwrap(try find("live-browser-approval-reason") as? UILabel)
+            XCTAssertEqual(bar.accessibilityLabel, Strings.LiveBrowser.approvalBar(approval), what)
+            XCTAssertTrue(bar.accessibilityLabel!.hasPrefix("\(Strings.LiveBrowser.approvalSays) \(reason)"), "it leads with the reason, \(what)")
+            let says = try XCTUnwrap(try find("live-browser-approval-says") as? UILabel)
+            let title = try XCTUnwrap(try find("live-browser-approval-summary") as? UILabel)
+            let kind = try XCTUnwrap(try find("live-browser-approval-kind") as? UILabel)
             let page = try XCTUnwrap(try find("live-browser-approval-page") as? UILabel)
-            XCTAssertEqual(lead.text, reason, what)
-            XCTAssertGreaterThan(lead.frame.height, 0, what)
-            XCTAssertLessThanOrEqual(lead.numberOfLines, 3, what)
+            XCTAssertFalse(says.isHidden, what)
+            XCTAssertEqual(says.text, Strings.LiveBrowser.approvalSays, what)
+            XCTAssertGreaterThan(says.frame.height, 0, what)
+            XCTAssertLessThanOrEqual(says.frame.maxY, title.frame.minY, "the label over the title, \(what)")
+            XCTAssertEqual(title.text, reason, what)
+            XCTAssertEqual(title.numberOfLines, LiveBrowserApprovalBarLayout.Metrics.titleLines, what)
+            XCTAssertGreaterThan(title.frame.height, title.font.lineHeight * 3, "a long reason takes its four lines, \(what)")
+            XCTAssertLessThanOrEqual(title.frame.height, ceil(title.font.lineHeight * 4) + 2, "and no more, \(what)")
+            XCTAssertEqual(kind.text, "Runs a script on this page", what)
+            XCTAssertGreaterThan(kind.frame.height, 0, what)
             XCTAssertEqual(page.text, "Page: console.example.com/billing/home", what)
+            XCTAssertEqual(page.numberOfLines, 1, what)
             XCTAssertGreaterThan(page.frame.height, 0, what)
+            XCTAssertLessThanOrEqual(page.frame.maxY, bar.body.bounds.height + 0.5, "the page shows closed, not scrolled away, \(what)")
             XCTAssertTrue(try find("live-browser-approval-code").superview!.isHidden, "closed: no script, \(what)")
             XCTAssertTrue(try find("live-browser-approval-details").isHidden, what)
             XCTAssertFalse(bar.toggle.isHidden, what)
@@ -1407,7 +1422,9 @@ extension HostedLiveBrowserTests {
             XCTAssertFalse(code.superview!.isHidden, what)
             XCTAssertEqual(code.text, script, what)
             XCTAssertTrue(code.font.fontDescriptor.symbolicTraits.contains(.traitMonoSpace), what)
-            XCTAssertFalse(try find("live-browser-approval-details").isHidden, what)
+            let others = try XCTUnwrap(try find("live-browser-approval-details") as? UILabel)
+            XCTAssertFalse(others.isHidden, what)
+            XCTAssertEqual(others.text, "Waits up to 10 seconds", what)
             XCTAssertEqual(bar.toggle.configuration?.title, Strings.LiveBrowser.approvalHide, what)
             XCTAssertGreaterThan(bar.frame.height, closed.height, what)
             XCTAssertLessThanOrEqual(bar.frame.height, layout.maxHeight(expanded: true), what)
@@ -1424,13 +1441,30 @@ extension HostedLiveBrowserTests {
             XCTAssertEqual(bar.frame, closed, what)
         }
 
-        // A new approval starts closed; one with nothing more has no Details.
+        // A new approval starts closed; one with no script and no other
+        // lines has no Details, and can't be opened.
         bar.setExpanded(true)
-        bar.show(LiveBrowserState.Approval(id: "e2", summary: "The agent wants to click.", details: ["Page: a.example"]))
+        let click = LiveBrowserState.Approval(id: "e2", summary: "Save the new billing contact", details: [#"Click "Save""#, "Page: a.example"],
+                                              reason: "Save the new billing contact")
+        bar.show(click)
         XCTAssertFalse(bar.expanded)
         bar.place(places[0])
         bar.layoutIfNeeded()
         XCTAssertTrue(bar.toggle.isHidden)
+        bar.setExpanded(true)
+        XCTAssertFalse(bar.expanded, "nothing for Details to show")
+        XCTAssertGreaterThan(try find("live-browser-approval-page").frame.height, 0)
+
+        // No reason (an older bridge, a page action without one): the
+        // summary is the title, with no "The agent says it will:".
+        bar.show(LiveBrowserState.Approval(id: "e3", summary: "The agent wants to click.", details: [#"Click "Save""#, "Page: a.example"]))
+        bar.place(places[0])
+        bar.layoutIfNeeded()
+        XCTAssertTrue(try find("live-browser-approval-says").isHidden)
+        XCTAssertEqual((try find("live-browser-approval-summary") as? UILabel)?.text, "The agent wants to click.")
+        XCTAssertTrue(bar.toggle.isHidden)
+        XCTAssertEqual(bar.accessibilityLabel, Strings.LiveBrowser.approvalBar(bar.approval!))
+        XCTAssertTrue(bar.accessibilityLabel!.hasPrefix("The agent wants to click."))
     }
 
     private static func view(_ root: UIView, _ id: String) -> UIView? {

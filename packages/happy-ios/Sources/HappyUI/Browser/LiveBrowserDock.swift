@@ -1197,14 +1197,14 @@ final class LiveBrowserDock: NSObject {
     // MARK: Approvals
 
     /// Approve, Deny, or Not now for the action the agent waits on. The
-    /// words are the bridge's scrubbed summary and its lines, the agent's
-    /// reason ("Agent says: …") and the page among them: never what was
-    /// typed. The script stays the bar's, under Details.
+    /// words lead with what the agent says it will do, then the bridge's
+    /// scrubbed lines, the page among them: never what was typed. The
+    /// script stays the bar's, under Details.
     private func askApproval(_ approval: LiveBrowserState.Approval) {
         guard let host, approvalAlert == nil else { return }
         var presenter: UIViewController = host
         while let next = presenter.presentedViewController, !next.isBeingDismissed { presenter = next }
-        let alert = UIAlertController(title: Strings.LiveBrowser.approvalTitle, message: approval.text, preferredStyle: .alert)
+        let alert = UIAlertController(title: Strings.LiveBrowser.approvalTitle, message: Strings.LiveBrowser.approvalMessage(approval), preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: Strings.LiveBrowser.deny, style: .destructive) { [weak self] _ in self?.decide(approval, approve: false) })
         let approve = UIAlertAction(title: Strings.LiveBrowser.approve, style: .default) { [weak self] _ in self?.decide(approval, approve: true) }
         alert.addAction(approve)
