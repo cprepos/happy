@@ -12,7 +12,7 @@ import { createInterface } from 'node:readline';
 import { loadConfig, readSecret } from './lib/config.mjs';
 import { createUpstreamMcp, localToolName } from './lib/upstream.mjs';
 import { createSecretGate, SECRET_TOOL_NAMES } from './lib/secrets.mjs';
-import { REASON_TOOLS, REASON_MAX_INPUT, CODE_MAX } from './lib/approval.mjs';
+import { REASON_TOOLS, REASON_MAX_INPUT, CODE_MAX, REASON_REFUSED } from './lib/approval.mjs';
 import { createAgentChatLookup } from '../../identity/agentchat.mjs';
 import { chatFromMeta, chatOfMeta, fillerChatOf, withoutChatMeta } from '../../identity/chatmeta.mjs';
 
@@ -218,14 +218,17 @@ export function withScopeParam(schema) {
 const SCREENSHOT_NOTE = ' By default (scope "screen") the image is the browser as the live view shows it, with the tab strip and the address bar showing the URL, and the result carries the URL, title, capture time (captured_at, UTC, and tz) and the sha256 of the capture as taken and as filed; scope "page" gives the page content only. With view "desktop" the desktop panel across the top shows the clock the screen showed (its own, nothing is drawn on the image); it ticks once a second, so it can be up to about 1 s behind captured_at. View "tab" is the browser window alone. Personal data in the image is redacted unless redact is false (full-fidelity evidence); that redaction is the only change made to the captured pixels, and the address bar and the panel are never redacted.';
 
 // The bridge's own `reason` argument on the tool-call tools that may need the user's approval
-// (REASON_TOOLS), shown to the user as "Agent says: ..." on the approval. Required on
-// browser_eval_js, whose approval would otherwise be a bare script. Never passed on upstream.
+// (REASON_TOOLS), shown to the user as the approval's headline: what they are agreeing to.
+// Required on browser_eval_js, whose approval would otherwise be a bare script; the bridge server
+// refuses an eval_js approval without one as well. Never passed on upstream (its schema is
+// additionalProperties: false).
 export const REASON_REQUIRED = new Set(['browser_eval_js']);
-const REASON_DESCRIPTION = 'In plain words, what this does and why, e.g. \'Read the monthly cost table from the Billing page\'. Shown to the user when they are asked to approve it.';
+const REASON_EXAMPLE = '"Click \'Download CSV\' in Cost Explorer to save October\'s cost report"';
+const REASON_DESCRIPTION = `What will happen, in words a person can approve without reading the script: what it clicks, changes, fills in or reads, on which page, naming any button, field or value it changes. E.g. ${REASON_EXAMPLE}. Not "run a script" or "check the page". This is the headline of the approval the user sees.`;
 const reasonProp = (required) => ({ type: 'string', ...(required ? { minLength: 1 } : {}), maxLength: REASON_MAX_INPUT, description: REASON_DESCRIPTION });
-const REASON_NOTE = ' Give reason: a plain-language description of what this does and why; the user sees it when asked to approve.';
-export const REASON_MISSING = `Error: nothing was run. browser_eval_js needs a reason: say in plain words what the script does and why (1-${REASON_MAX_INPUT} characters, e.g. "Read the monthly cost table from the Billing page"), then call it again with reason added. The user sees it when asked to approve the script.`;
-const REASON_BAD = `Error: nothing was run. reason must be a string of at most ${REASON_MAX_INPUT} characters: what this does and why, in plain words.`;
+const REASON_NOTE = ` Give reason: what will happen, in plain words a person can approve (what it clicks, changes or reads, on which page; name any button, field or value it changes), e.g. ${REASON_EXAMPLE}. It is the headline of the approval the user sees.`;
+export const REASON_MISSING = `Error: nothing was run. browser_eval_js needs a reason: say in plain words what this script will do (what it clicks, changes or reads, on which page, naming any button, field or value it changes; 1-${REASON_MAX_INPUT} characters, e.g. ${REASON_EXAMPLE}), then call it again with reason added. The user approves the script by that text.`;
+const REASON_BAD = `Error: nothing was run. reason must be a string of at most ${REASON_MAX_INPUT} characters: what will happen, in plain words a person can approve.`;
 
 /** A tool's input schema with the bridge's `reason` argument added (required for eval_js). */
 export function withReasonParam(schema, required = false) {
@@ -1013,6 +1016,11 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
             return { result: pending.original };
         }
         const aid = pending.approvalId;
+        // The bridge refused it (eval_js with no reason): nothing ran, nothing to wait for.
+        if (reg?.refused === true) {
+            const msg = typeof reg.message === 'string' && reg.message ? reg.message : REASON_REFUSED;
+            return { final: toolResult({ status: 'refused', approval_id: aid, note: msg }, true) };
+        }
         // Browser yolo is on for this chat: the bridge approved it at once, nothing to wait for.
         const yolo = reg?.auto_approved === true;
         let st;
@@ -1072,9 +1080,11 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
                         'then waits while the user is asked to Approve or Deny in the live view, and runs once they approve. If it ' +
                         'comes back denied, do not retry; if it comes back approval_pending, do not repeat it: tell the user an ' +
                         'approval is waiting and call browser_wait_for_human. ' +
-                        'Give every browser_eval_js call (and the other tools that take one) a reason: in plain words, what it ' +
-                        'does and why, e.g. "Read the monthly cost table from the Billing page". The user sees it with the ' +
-                        'script when asked to approve; a script without one is refused.',
+                        'Give every browser_eval_js call (and the other tools that take one) a reason: what will happen, in ' +
+                        'words a person can approve without reading the script: what it clicks, changes or reads, on which ' +
+                        'page, naming any button, field or value it changes, e.g. ' + REASON_EXAMPLE + '. Not "run a ' +
+                        'script" or "check the page". It is the headline of the approval the user sees; a script without ' +
+                        'one is refused and nothing runs.',
                 });
             }
             case 'ping':
