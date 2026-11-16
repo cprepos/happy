@@ -78,3 +78,19 @@ After every upstream merge, rerun the translation-counts script
 with the merge. It counts HappyUI's `Strings` sources as well as the
 catalogs, so an upstream `Strings` file can change it even when no catalog
 changed; a stale fixture fails `TranslationCatalogTests`.
+
+## Upstream Merges: Removed UI Flows
+
+When an upstream intake removes a screen, alert or flow, grep our tests
+(`packages/happy-ios/Tests/`) for its user-facing strings and its types, and
+mirror upstream's own test change in ours. Our tests are not in upstream's
+diff, so nothing else flags them; they fail later as a test waiting for UI
+that no longer comes up. Example: 781204ffc removed the "Picture not set"
+alert (`paintBotFace`), and our hosted legacy-bot spawn test kept waiting for
+it until it was changed to expect no alert, as upstream's test does.
+
+When upstream adds a `Sources/**/NativeTranslations+*.swift` string file, add
+its key prefix (for example `native.compute.`) to `otherPrefixes` in
+`packages/happy-ios/Tests/HappyCoreTests/AccountKindNamingTests.swift`. That
+allowlist is ours, upstream's test has none, and a prefix missing from it
+fails `testEveryLanguageHasTheKindsWords`.
