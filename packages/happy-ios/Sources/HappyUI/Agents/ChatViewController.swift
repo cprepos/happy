@@ -82,6 +82,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     /// The read failed with nothing to show: the session chat's Retry, in
     /// the transcript's place.
     lazy var loadFailure = ChatPlaceholderView()
+    let slowRead = SlowReadWatch()
     /// Older pages on their way; a pull waits for none.
     var olderLoads = 0
     /// New work's Task or Bot and name, until its first message shows.
@@ -1096,7 +1097,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
     }
 
     private func updateChips() {
-        if reading(chat), picked == nil {
+        if chipsWait(reading(chat) && picked == nil) { waitForChips { [weak self] in self?.updateChips() }
             card.configuration.model = nil
             card.configuration.effort = nil
         } else {
@@ -2263,7 +2264,7 @@ extension ChatViewController: AgentInputCardDelegate {
 
     /// A chip opens its list; with no models yet, they are asked for again.
     func agentInputCard(_ card: AgentInputCardView, didPress chip: AgentInputChip) {
-        guard let menus, !reading(chat) || picked != nil else { return session.models.load() }
+        guard let menus, !chipsWait(reading(chat) && picked == nil) else { return session.models.load() }
         picker?.close(animated: false)
         let picker = PickerPresenter(list: chip == .effort ? .effort : .model, card: card, menus: menus, usage: session.models.usage) { [weak self] key in
             self?.choose(key)

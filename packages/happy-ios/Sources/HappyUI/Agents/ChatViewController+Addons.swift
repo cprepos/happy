@@ -162,6 +162,53 @@ extension ChatViewController {
     }
 }
 
+extension ChatViewController {
+    // MARK: Model chip on a slow history read
+
+    /// The chips wait while history is read, so opening a chat doesn't
+    /// flash the default model before its own; a read that is slow to
+    /// answer shows them anyway, on the conversation's mode if it is known
+    /// or the default, so the model can still be seen and picked.
+    /// `held` is upstream's own wait: history read with nothing picked.
+    func chipsWait(_ held: Bool) -> Bool {
+        if !held { slowRead.reset() }
+        return held && chat.mode == nil && !slowRead.isSlow
+    }
+
+    /// While the chips wait: after a moment, `recheck` shows them.
+    func waitForChips(_ recheck: @escaping @MainActor () -> Void) {
+        slowRead.start(recheck)
+    }
+}
+
+/// The read the chips wait on, timed: slow once it has taken longer than a
+/// chat's open should. An extension can't hold it, so this object does.
+@MainActor
+final class SlowReadWatch {
+    static let delay: Duration = .seconds(1.5)
+    private(set) var isSlow = false
+    private var timer: Task<Void, Never>?
+
+    /// Arms the timer once; when it fires the read is slow and `fire` runs.
+    func start(_ fire: @escaping @MainActor () -> Void) {
+        guard timer == nil, !isSlow else { return }
+        timer = Task { [weak self] in
+            try? await Task.sleep(for: Self.delay)
+            guard let self, !Task.isCancelled else { return }
+            self.timer = nil
+            self.isSlow = true
+            fire()
+        }
+    }
+
+    /// The read is over, or a new one starts: nothing is slow yet.
+    func reset() {
+        timer?.cancel()
+        timer = nil
+        isSlow = false
+    }
+}
+
 extension ChatViewController: LiveBrowserDockHosting {
     var liveBrowserDock: LiveBrowserDock? { previewing ? nil : liveDock }
 }
