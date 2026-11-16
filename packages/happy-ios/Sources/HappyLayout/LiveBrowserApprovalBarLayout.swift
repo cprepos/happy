@@ -4,7 +4,8 @@ import CoreGraphics
 #endif
 
 /// Where the live browser's approval bar goes: the action the agent waits
-/// on, its summary, the agent's reason and the page, Deny and Approve.
+/// on, what the agent says it will do, what kind of thing it is and the
+/// page, Deny and Approve.
 /// Never over the picture's place, and nothing else moves for it.
 ///
 ///     phone upright, full screen     elsewhere in full screen   the chat
@@ -46,9 +47,11 @@ public struct LiveBrowserApprovalBarLayout: Equatable, Sendable {
         /// What noVNC's page keeps at its bottom for its keyboard button,
         /// which is inside the page where nothing here can measure it.
         public static let noVNCReserve: CGFloat = 56
-        /// A floating bar's tallest, and the chat's.
-        public static let overlayMaxHeight: CGFloat = 132
-        public static let chatMaxHeight: CGFloat = 168
+        /// A floating bar's tallest, and the chat's: room, closed, for
+        /// "The agent says it will:", a 4-line title, the kind line, the
+        /// page and the buttons.
+        public static let overlayMaxHeight: CGFloat = 232
+        public static let chatMaxHeight: CGFloat = 232
         /// Any bar's tallest with Details open, where there is the room.
         public static let expandedMaxHeight: CGFloat = 360
         /// The content's padding inside the bar, and its corner.
@@ -63,6 +66,8 @@ public struct LiveBrowserApprovalBarLayout: Equatable, Sendable {
         public static let textInset: CGFloat = 24
         /// Between the summary and the lines, and between lines.
         public static let lineGap: CGFloat = 4
+        /// Between "The agent says it will:" and the title under it.
+        public static let labelGap: CGFloat = 2
         /// Over the buttons' row, and between Deny and Approve.
         public static let rowGap: CGFloat = 10
         public static let buttonGap: CGFloat = 8
@@ -70,8 +75,10 @@ public struct LiveBrowserApprovalBarLayout: Equatable, Sendable {
         public static let toggle: CGFloat = 24
         /// The script's text inside its block.
         public static let codeInset: CGFloat = 8
-        /// The agent's reason shows this many lines before Details.
-        public static let leadLines = 3
+        /// The title (the agent's reason, or the summary) shows this many
+        /// lines at most, and the kind line this many closed.
+        public static let titleLines = 4
+        public static let kindLines = 2
         /// A button is never narrower than this.
         public static let minButton: CGFloat = 76
     }
@@ -190,21 +197,25 @@ extension LiveBrowserApprovalBarLayout {
     /// Inside the bar, `width` wide and never taller than `maxHeight`:
     ///
     ///     ┌──────────────────────────────────┐
-    ///     │ ◇ summary                        │
+    ///     │ ◇ The agent says it will:        │
+    ///     │   title (4 lines at most)        │
     ///     │   ┌ body (scrolls) ────────────┐ │
-    ///     │   │ Agent says: … (3 lines)    │ │
+    ///     │   │ Runs a script on this page │ │
     ///     │   │ Page: …                    │ │
     ///     │   └────────────────────────────┘ │
     ///     │   Details         [Deny][Approve]│
     ///     └──────────────────────────────────┘
     ///
-    /// The body is a stack of measured pieces, `lineGap` apart: the reason
-    /// and the page; with Details open, every line and the script's
-    /// block. It shows what fits under `maxHeight` and scrolls the rest;
-    /// the summary and the buttons always show. Inline, Deny and Approve
-    /// sit at the right, centred, and Details goes under the body.
+    /// The label shows only over the agent's own words. The body is a
+    /// stack of measured pieces, `lineGap` apart: the kind line and the
+    /// page; with Details open, the other lines and the script's block.
+    /// It shows what fits under `maxHeight` and scrolls the rest; the
+    /// label, the title and the buttons always show. Inline, Deny and
+    /// Approve sit at the right, centred, and Details goes under the body.
     public struct Content: Equatable, Sendable {
         public var icon: CGRect
+        /// "The agent says it will:", over the title; zero high without it.
+        public var label: CGRect
         public var summary: CGRect
         /// The body's window, and its pieces inside it, from its top.
         public var body: CGRect
@@ -244,16 +255,20 @@ extension LiveBrowserApprovalBarLayout {
             height > 0 ? height + 2 * Metrics.codeInset : 0
         }
 
-        /// `summary` and `pieces` are heights measured at `textWidth`,
-        /// `deny`, `approve` and `toggle` widths as measured (`toggle` nil
-        /// for none); `asking` is false for a notice, which has no buttons.
-        public init(width: CGFloat, maxHeight: CGFloat, inline: Bool, asking: Bool, summary: CGFloat, pieces: [CGFloat],
+        /// `label`, `summary` and `pieces` are heights measured at
+        /// `textWidth` (`label` 0 for none), `deny`, `approve` and `toggle`
+        /// widths as measured (`toggle` nil for none); `asking` is false
+        /// for a notice, which has no buttons.
+        public init(width: CGFloat, maxHeight: CGFloat, inline: Bool, asking: Bool, label: CGFloat = 0, summary: CGFloat, pieces: [CGFloat],
                     deny: CGFloat, approve: CGFloat, toggle: CGFloat?) {
             typealias M = LiveBrowserApprovalBarLayout.Metrics
             let inline = inline && asking
             let text = Self.textWidth(width: width, inline: inline, asking: asking, deny: deny, approve: approve)
             let textX = M.padding + M.textInset
-            let summaryHeight = max(M.icon.height, summary.rounded(.up))
+            let labelHeight = max(0, label.rounded(.up))
+            let labelBlock = labelHeight > 0 ? labelHeight + M.labelGap : 0
+            let summaryHeight = labelBlock > 0 ? summary.rounded(.up) : max(M.icon.height, summary.rounded(.up))
+            let header = labelBlock + summaryHeight
             var y: CGFloat = 0
             var stacked: [CGRect] = []
             for piece in pieces where piece > 0 {
@@ -269,22 +284,23 @@ extension LiveBrowserApprovalBarLayout {
             let shown: CGFloat, top: CGFloat, total: CGFloat
             if inline {
                 let toggleRow = toggleWidth != nil ? M.lineGap + M.toggle : 0
-                let room = maxHeight - 2 * M.padding - summaryHeight - lead - toggleRow
+                let room = maxHeight - 2 * M.padding - header - lead - toggleRow
                 shown = max(0, min(bodyHeight, room))
-                let block = summaryHeight + (bodyHeight > 0 ? lead + shown : 0) + toggleRow
+                let block = header + (bodyHeight > 0 ? lead + shown : 0) + toggleRow
                 total = 2 * M.padding + max(block, M.button)
                 top = M.padding + max(0, (M.button - block) / 2)
             } else {
                 let row = asking || toggleWidth != nil ? M.rowGap + M.button : 0
-                let room = maxHeight - 2 * M.padding - summaryHeight - row - lead
+                let room = maxHeight - 2 * M.padding - header - row - lead
                 shown = max(0, min(bodyHeight, room))
-                total = 2 * M.padding + summaryHeight + (bodyHeight > 0 ? lead + shown : 0) + row
+                total = 2 * M.padding + header + (bodyHeight > 0 ? lead + shown : 0) + row
                 top = M.padding
             }
             height = total
             icon = CGRect(origin: CGPoint(x: M.padding, y: top), size: M.icon)
-            self.summary = CGRect(x: textX, y: top, width: text, height: summaryHeight)
-            let body = CGRect(x: textX, y: top + summaryHeight + lead, width: text, height: shown)
+            self.label = CGRect(x: textX, y: top, width: text, height: labelHeight)
+            self.summary = CGRect(x: textX, y: top + labelBlock, width: text, height: summaryHeight)
+            let body = CGRect(x: textX, y: top + header + lead, width: text, height: shown)
             self.body = body
             let buttonY = inline ? (total - M.button) / 2 : total - M.padding - M.button
             let approveFrame = CGRect(x: width - M.padding - approveWidth, y: buttonY, width: approveWidth, height: M.button)

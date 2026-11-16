@@ -91,11 +91,69 @@ final class LiveBrowserApprovalBarContentTests: XCTestCase {
         XCTAssertNil(notice.toggle)
     }
 
+    // MARK: The agent's words, closed
+
+    /// The tallest closed bar: "The agent says it will:" (14), a reason at
+    /// its four lines (4 × 19), a two-line kind line (30) and the page (15).
+    let tallest = (label: CGFloat(14), title: CGFloat(76), kind: CGFloat(30), page: CGFloat(15))
+
+    func testTheLabelStandsOverTheTitleAndTheIconBesideIt() {
+        let content = Content(width: 386, maxHeight: 232, inline: false, asking: true, label: 14, summary: 76, pieces: [15, 15],
+                              deny: 70, approve: 80, toggle: nil)
+        assertFrame(content.icon, rect(12, 12, 18, 20))
+        assertFrame(content.label, rect(36, 12, 338, 14))
+        assertFrame(content.summary, rect(36, 28, 338, 76))  // under the label and its gap of 2
+        assertFrame(content.body, rect(36, 108, 338, 34))
+        XCTAssertEqual(content.bodyHeight, 34)
+        assertFrame(content.deny, rect(210, 152, 76, 36))
+        XCTAssertEqual(content.height, 200)
+        // No label: no gap for one, and the title starts at the top.
+        let none = Content(width: 386, maxHeight: 232, inline: false, asking: true, summary: 76, pieces: [15, 15],
+                           deny: 70, approve: 80, toggle: nil)
+        XCTAssertEqual(none.label.height, 0)
+        assertFrame(none.summary, rect(36, 12, 338, 76))
+        XCTAssertEqual(none.height, 184)
+    }
+
+    func testALongReasonAtItsFourLinesLeavesTheKindLineAndThePageShowingClosed() {
+        XCTAssertEqual(Bar.Metrics.titleLines, 4, "a long reason is cut at four lines")
+        let t = tallest
+        // The chat, a phone held upright (floating, 378), an iPad (floating, inline at 520).
+        let chat = Bar(size: size, safeArea: safe, place: .chat(card: rect(8, 776, 386, 56), anchor: 756))
+        let page = LiveBrowserFullScreenLayout(size: size, safeArea: safe, top: 116, phone: true, aspect: nil)
+        let held = Bar(size: size, safeArea: safe, place: .fullScreen(picture: page.content, phone: true, held: true, strip: nil, floor: 791))
+        for (bar, what) in [(chat, "chat"), (held, "held")] {
+            let content = Content(width: bar.width, maxHeight: bar.maxHeight, inline: bar.inline, asking: true, label: t.label, summary: t.title,
+                                  pieces: [t.kind, t.page], deny: 70, approve: 80, toggle: nil)
+            XCTAssertEqual(content.body.height, content.bodyHeight, "the kind line and the page show whole, unscrolled, \(what)")
+            XCTAssertEqual(content.pieces.last?.maxY, content.body.height, what)
+            XCTAssertLessThanOrEqual(content.height, bar.maxHeight, what)
+            XCTAssertNil(content.toggle, "no script, no other lines: no Details, \(what)")
+        }
+        let inline = Content(width: 520, maxHeight: Bar.Metrics.overlayMaxHeight, inline: true, asking: true, label: t.label, summary: t.title,
+                             pieces: [t.kind, t.page], deny: 70, approve: 80, toggle: nil)
+        XCTAssertEqual(inline.body.height, inline.bodyHeight)
+        XCTAssertNil(inline.toggle)
+        XCTAssertEqual(inline.height, 12 + 14 + 2 + 76 + 4 + 49 + 12)
+    }
+
+    func testDetailsIsThereOnlyForAScriptOrOtherLines() {
+        let t = tallest
+        let without = Content(width: 386, maxHeight: 232, inline: false, asking: true, label: t.label, summary: t.title, pieces: [t.kind, t.page],
+                              deny: 70, approve: 80, toggle: nil)
+        XCTAssertNil(without.toggle)
+        let with = Content(width: 386, maxHeight: 232, inline: false, asking: true, label: t.label, summary: t.title, pieces: [t.kind, t.page],
+                           deny: 70, approve: 80, toggle: 60)
+        assertFrame(with.toggle, rect(36, with.deny.minY, 60, 36))
+        XCTAssertEqual(with.height, without.height, "Details shares the buttons' row")
+        XCTAssertEqual(with.body, without.body)
+    }
+
     // MARK: Details open, outside
 
     func testInTheChatItGrowsUpToTheExpandedMost() {
         let bar = Bar(size: size, safeArea: safe, place: .chat(card: rect(8, 776, 386, 56), anchor: 756))
-        XCTAssertEqual(bar.maxHeight(expanded: false), 168)
+        XCTAssertEqual(bar.maxHeight(expanded: false), 232)
         XCTAssertEqual(bar.maxHeight(expanded: true), Bar.Metrics.expandedMaxHeight)
         assertFrame(bar.frame(height: 400, expanded: true), rect(8, 388, 386, 360))
         XCTAssertEqual(bar.anchor(height: 400, expanded: true), 388, "a bottom-corner player keeps above it")

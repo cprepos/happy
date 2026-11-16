@@ -156,7 +156,7 @@ final class LiveBrowserApprovalBarLayoutTests: XCTestCase {
         XCTAssertFalse(bar.compact)
         assertFrame(bar.frame(height: 100), rect(8, 648, 386, 100))
         XCTAssertEqual(bar.anchor(height: 100), 648, "a bottom-corner player keeps above it")
-        assertFrame(bar.frame(height: 400), rect(8, 580, 386, 168))
+        assertFrame(bar.frame(height: 400), rect(8, 516, 386, 232))
         // No room: nothing, never a negative height.
         let none = Bar(size: size, safeArea: safe, place: .chat(card: card, anchor: 60))
         XCTAssertEqual(none.frame(height: 100).height, 0)
