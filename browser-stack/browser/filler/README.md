@@ -382,13 +382,14 @@ the chat id (a process without one sends `none`, served by `default_client`).
   "clients": {
     "agent": {
       "all_items": true, "secrets": {},
-      "manage": { "create": true, "update": true, "remove": true, "compare": true, "pipe": ["docker-login", "gh-token"] }
+      "manage": { "create": true, "update": true, "remove": true, "compare": true, "pipe": ["docker-login", "gh-token", "gh-secret"] }
     }
   },
   "chats": {},
   "pipe_targets": {
     "docker-login": { "argv": ["docker", "login", "--username", "{username}", "--password-stdin", "{arg:registry}"], "args": { "registry": "[a-z0-9.-]+(:[0-9]+)?" } },
-    "gh-token": { "argv": ["gh", "auth", "login", "--hostname", "github.com", "--with-token"] }
+    "gh-token": { "argv": ["gh", "auth", "login", "--hostname", "github.com", "--with-token"] },
+    "gh-secret": {"argv": ["gh","secret","set","{arg:name}","--repo","{arg:repo}"], "args": {"name": "[A-Za-z_][A-Za-z0-9_]*", "repo": "[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"}}
   }
 }
 ```
@@ -409,6 +410,14 @@ the chat id (a process without one sends `none`, served by `default_client`).
   with a target like `{"argv": ["acli", "jira", "auth", "login", "--site",
   "{arg:site}", "--email", "{username}", "--token"], "args": {"site":
   "[a-z0-9][a-z0-9-]*\\.atlassian\\.net"}}`.
+- `gh-secret` sets a GitHub Actions secret from a login's custom field:
+  `vault_pipe {id, custom_field: "Token", target: "gh-secret", args: {name: "<SECRET_NAME>", repo: "owner/repo"}}`.
+  The value goes to `gh secret set`'s stdin.
+- The filler only approves a pipe and hands back the argv and the value.
+  The command runs in the vault tools' MCP process
+  (`vault-mcp/lib/pipe.mjs`), as that chat's user (prep) with its
+  environment. So a CLI such as `gh` must be logged in for prep, not for
+  happy-filler.
 - `make filler-policy-upgrade` upgrades an older policy once (one with no
   `pipe_targets`): it backs it up to `policy-backups/`, gives the
   `all_items` client `manage` with every action on and `"pipe": []`, and
