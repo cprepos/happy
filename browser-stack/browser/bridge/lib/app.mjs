@@ -53,9 +53,11 @@
 //   POST /api/state     {session_id?, action?}      -> the session's link state ({status: null} without one);
 //                       with no session_id, a held link if any. With an action ({kind, target}) on a link
 //                       nobody holds, records it as last_action.
-//   POST /api/approval  {session_id|chat_key, approval_id}
+//   POST /api/approval  {session_id|chat_key, approval_id, reason?, code?}
 //                       -> {id, url, approval}: an auto-browser approval of this link's own session,
 //                       still pending, is shown to the user (state.approval, scrubbed) until decided.
+//                       reason (the agent's, for a tool call) becomes an "Agent says: " line, and code
+//                       (eval_js's script) approval.code, scrubbed; both only on first registration.
 //                       With browser yolo on for the link, approved at once instead:
 //                       -> {id, url, approval: null, auto_approved: true, approval_status: approved}
 //   POST /api/approval/wait {id, approval_id, wait_s}
@@ -96,7 +98,7 @@ import { timingSafeEqual, randomBytes, createHash } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import { connect as netConnect } from 'node:net';
 import { renderPage, renderGone } from './page.mjs';
-import { APPROVAL_ID, approvalSummary } from './approval.mjs';
+import { APPROVAL_ID, approvalSummary, summaryWithReason, REASON_MAX_INPUT, CODE_MAX } from './approval.mjs';
 
 const LIVE_ROUTE = /^\/live\/([^/]+)(\/frame\.jpg|\/screen\.png|\/state|\/done|\/take|\/release|\/end|\/sleep|\/nav|\/approve|\/deny|\/auto)?\/?$/;
 const CHAT_ROUTE = /^\/live\/chat\/([0-9a-f]{32})\/?$/;
@@ -171,7 +173,7 @@ export function navUrl(input) {
 export function pendingApproval(rec) {
     const a = rec.approval;
     if (!a || a.status !== 'pending' || a.sessionId !== rec.sessionId || rec.status === 'done') return null;
-    return { id: a.id, kind: a.kind, summary: a.summary, details: a.details ?? [], asked_at: a.askedAt ?? null };
+    return { id: a.id, kind: a.kind, summary: a.summary, details: a.details ?? [], asked_at: a.askedAt ?? null, code: a.code ?? null };
 }
 
 export function stateOf(rec) {
@@ -428,7 +430,7 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         const a = body.on ? pendingApproval(rec) : null;
         const c = a ? clientOf(rec) : null;
         if (a && c) {
-            const err = await yoloApprove(rec, c, a.id, a.summary);
+            const err = await yoloApprove(rec, c, a.id, summaryWithReason(a.summary, a.details));
             if (!err) settleApproval(rec, 'approved');
             else if (err.status === 409 || err.status === 404) await syncApproval(rec);
         }
@@ -713,13 +715,19 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
             }
             // Only this link's own session: never another chat's approval.
             if (record?.session_id !== rec.sessionId) return send(res, 403, { error: 'not_this_session' });
+            // The agent's reason and script preview, sent by the MCP server that made the call. Kept
+            // with this approval id, set at most once, and for a per-chat browser taken only from that
+            // chat's own MCP server (its chat_key), never from a bare session id.
+            const extras = (chatRec || !podLink(rec)) ? approvalExtras(body) : {};
+            const hasExtras = !!(extras.reason || extras.code);
             if (record.status !== 'pending') {
                 return send(res, 409, { error: 'not_pending', approval_status: APPROVAL_STATUS[record.status] ?? 'gone' });
             }
             // Browser yolo: approved at once, never shown or waited on. Should that fail for any
             // reason but a decision made meanwhile, the user is asked as usual.
             if (rec.autoApprove === true) {
-                const err = await yoloApprove(rec, c, aid, approvalSummary(record, rec.url).summary);
+                const shown = approvalSummary(record, rec.url, extras);
+                const err = await yoloApprove(rec, c, aid, summaryWithReason(shown.summary, shown.details));
                 if (!err) return send(res, 200, { id: rec.id, url: linkUrl(rec), approval: null, auto_approved: true, approval_status: 'approved' });
                 if (err.status === 409 || err.status === 404) {
                     let current = null;
@@ -728,8 +736,12 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
                 }
                 log(`yolo mode /live/${rec.id.slice(0, 6)}… could not auto-approve ${aid}; asking the user`);
             }
-            if (rec.approval?.id !== aid || rec.approval.status !== 'pending') {
-                store.update(rec, { approval: { id: aid, sessionId: rec.sessionId, ...approvalSummary(record, rec.url), askedAt: now(), status: 'pending', decidedAt: null } });
+            const same = rec.approval?.id === aid && rec.approval.status === 'pending';
+            if (!same) {
+                store.update(rec, { approval: { id: aid, sessionId: rec.sessionId, ...approvalSummary(record, rec.url, extras), textSet: hasExtras, askedAt: now(), status: 'pending', decidedAt: null } });
+            } else if (hasExtras && rec.approval.textSet !== true) {
+                // Registered first without its text (say, by a bare session id): the owner's text, once.
+                store.update(rec, { approval: { ...rec.approval, ...approvalSummary(record, rec.url, extras), textSet: true } });
             }
             return send(res, 200, { id: rec.id, url: linkUrl(rec), approval: pendingApproval(rec) });
         }
@@ -765,6 +777,11 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         return send(res, 404, { error: 'not_found' });
     }
 
+    // /api/approval's optional {reason, code}: strings only, bounded before they are scrubbed.
+    const approvalExtras = (body) => ({
+        reason: typeof body?.reason === 'string' ? body.reason.slice(0, REASON_MAX_INPUT * 2) : null,
+        code: typeof body?.code === 'string' ? body.code.slice(0, CODE_MAX * 4) : null,
+    });
     const chatKeyOf = (body) => {
         if (typeof body?.chat_key !== 'string' || !CHAT_KEY.test(body.chat_key)) throw Object.assign(new Error('chat_key must be 32 hex chars'), { status: 400 });
         return body.chat_key;

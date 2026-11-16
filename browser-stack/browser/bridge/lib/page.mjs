@@ -57,6 +57,9 @@ header { position: sticky; top: 0; z-index: 1; width: 100%; background: var(--su
 #approval h2 { margin: 0 0 4px; font-size: 16px; }
 #approval p { margin: 0 0 6px; }
 #approval ul { margin: 0 0 10px; padding-left: 18px; }
+#approval-code-box { margin: 0 0 10px; }
+#approval-code { margin: 6px 0 0; max-height: 40vh; overflow: auto; padding: 8px; border-radius: 6px;
+  font: 12px/1.4 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-word; background: rgba(127,127,127,.12); }
 #approval .row { display: flex; gap: 10px; }
 #approval .btn.deny { color: var(--err-fg); }
 #approval-msg { margin-top: 8px; font-size: 13px; }
@@ -201,6 +204,10 @@ const SCRIPT = `
       li.textContent = String(d);
       list.appendChild(li);
     }
+    const code = typeof a.code === 'string' && a.code ? a.code : '';
+    $('approval-code').textContent = code;
+    $('approval-code-box').hidden = !code;
+    $('approval-code-box').open = false;
     $('approval-msg').textContent = '';
     $('approve').disabled = $('deny').disabled = false;
   }
@@ -454,6 +461,7 @@ export function renderPage({ id, state, takeoverUrl, nonce, frameWidth = 1920, f
   <h2 id="approval-title">Allow this browser action?</h2>
   <p id="approval-summary"></p>
   <ul id="approval-details"></ul>
+  <details id="approval-code-box" hidden><summary>Code</summary><pre id="approval-code"></pre></details>
   <div class="row">
     <button id="deny" class="btn deny" type="button">Deny</button>
     <button id="approve" class="btn primary" type="button">Approve</button>
