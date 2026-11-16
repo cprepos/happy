@@ -162,6 +162,78 @@ final class HostedLiveBrowserWaitTests: XCTestCase {
         XCTAssertTrue(line.dismissButton.isHidden)
     }
 
+    // MARK: Over the native viewer
+
+    /// Held in the native viewer, the approval bar and the wait bar stand
+    /// over its bar (Keyboard, Paste, Copy, Trackpad, Right click, More),
+    /// never on it, and rise with it over the keyboard and its key row.
+    func testOverTheNativeViewerTheBarsKeepClearOfItsControls() async throws {
+        let url = try XCTUnwrap(URL(string: "http://localhost:6090/live/3f9a1c0e5b7d42e8a6c1f09b2d4e7a35/vnc/vnc.html#password=pw"))
+        let target = try XCTUnwrap(LiveBrowserVNCTarget(novncURL: url))
+        // Never connects: the controls are what matters here.
+        let viewer = LiveBrowserVNCController(target: target) {
+            try await Task.sleep(for: .seconds(3600))
+            throw CancellationError()
+        }
+        let items = LiveBrowserFullScreenItems(dock: dock(), viewer: viewer)
+        let navigation = UINavigationController(rootViewController: items)
+        let window = hostedKeyWindow(in: try await hostedActiveScene(), root: navigation)
+        defer { viewer.stop(); window.isHidden = true }
+        window.layoutIfNeeded()
+        let toolbar = try XCTUnwrap(Self.find(viewer.view, "live-browser-vnc-bar"))
+        try await until { window.layoutIfNeeded(); return toolbar.bounds.height > 0 && toolbar.window != nil }
+        func controls() -> CGRect {
+            var rect = toolbar.convert(toolbar.bounds, to: items.view)
+            if let keys = viewer.screen.inputAccessoryView, keys.window != nil {
+                rect = rect.union(keys.convert(keys.bounds, to: items.view))
+            }
+            return rect
+        }
+        func clear(_ bar: UIView, _ what: String) {
+            items.view.setNeedsLayout()
+            items.view.layoutIfNeeded()
+            let frame = bar.frame, under = controls()
+            XCTAssertGreaterThan(frame.height, 0, what)
+            XCTAssertFalse(frame.intersects(under), "\(what): \(frame) over \(under)")
+            XCTAssertEqual(frame.maxY, toolbar.convert(toolbar.bounds, to: items.view).minY - 12, accuracy: 0.5, what)
+        }
+
+        items.approvalBar.show(LiveBrowserState.Approval(id: "a1", summary: "The agent wants to change account settings."))
+        clear(items.approvalBar, "approval")
+        let down = toolbar.convert(toolbar.bounds, to: items.view).minY
+
+        // The keyboard and its key row up: the toolbar rises, the bar with it.
+        viewer.showKeyboard()
+        XCTAssertTrue(viewer.screen.isFirstResponder)
+        try await until { window.layoutIfNeeded(); return toolbar.convert(toolbar.bounds, to: items.view).minY < down - 1 }
+        // Moved by the viewer's own layout (`onControlsMoved`), not by a pass of the test's.
+        XCTAssertLessThan(items.approvalBar.frame.maxY, down - 12 - 1)
+        clear(items.approvalBar, "approval, keyboard up")
+
+        // The wait bar in its place: the same.
+        items.approvalBar.show(nil)
+        items.waitBar.show(.takeover(reason: "Two-factor code", held: true))
+        clear(items.waitBar, "wait, keyboard up")
+        viewer.screen.showsKeyboard = false
+        try await until { window.layoutIfNeeded(); return abs(toolbar.convert(toolbar.bounds, to: items.view).minY - down) < 0.5 }
+        XCTAssertEqual(items.waitBar.frame.maxY, down - 12, accuracy: 0.5, "back down with the keyboard")
+        clear(items.waitBar, "wait")
+    }
+
+    private static func find(_ view: UIView, _ id: String) -> UIView? {
+        if view.accessibilityIdentifier == id { return view }
+        return view.subviews.lazy.compactMap { find($0, id) }.first
+    }
+
+    private func until(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
+        for _ in 0..<100 {
+            if condition() { return }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTFail("timed out", file: file, line: line)
+        throw BrowserError.timeout
+    }
+
     func testTheFullScreensDismissShowsWithTheWaitBar() {
         let items = LiveBrowserFullScreenItems(dock: dock(), browser: BrowserViewController(url: URL(string: "about:blank")!), noVNC: false)
         items.loadViewIfNeeded()
