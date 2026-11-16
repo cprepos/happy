@@ -301,6 +301,8 @@ final class AccountSessionTests: XCTestCase {
         http.onRaw("GET /v3/sessions/open-chat/messages", #"{"messages":[],"hasMore":false}"#)
         http.onRaw("GET /v1/machines", "[]")
         http.onRaw("GET /v1/account/settings", #"{"settings":null,"settingsVersion":0}"#)
+        // start() pulls the profile too; without this route the pull retries forever and waitForIdle() never returns.
+        http.onRaw("GET /v1/account/profile", #"{"id":"u1","timestamp":100,"firstName":null,"lastName":null,"username":null,"avatar":null,"github":null,"connectedServices":[]}"#)
         return http
     }
 
