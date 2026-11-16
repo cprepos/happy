@@ -20,6 +20,7 @@
     "Strings+Addons.swift": {"strings":4,"functions":0},
     "SupportUs.swift": {"strings":3,"functions":0},
     "Tablet.swift": {"strings":1,"functions":0},
+    "TerminalLink.swift": {"strings":0,"functions":1},
     "Voice.swift": {"strings":40,"functions":2}
   }
 }
