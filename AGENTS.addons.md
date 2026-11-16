@@ -63,3 +63,18 @@ section above. Before pushing, show the commits the push contains, and confirm
 the branch if it is anything other than `fork/main`.
 
 Do not force push for this workflow.
+
+## Upstream Merges: Generated Translation Files
+
+The translation outputs listed in `.gitattributes` use the `regenerated`
+merge driver: on a merge they keep our side, and are generated again
+afterwards (`make -C packages/happy-i18n merge-drivers` once per clone, then
+`make -C packages/happy-i18n translations` after each merge).
+
+After every upstream merge, rerun the translation-counts script
+(`node packages/happy-ios/scripts/translation-counts.mjs`, which the
+`translations` target also runs) and commit any change to
+`packages/happy-ios/Tests/HappyCoreTests/Fixtures/translation-counts.json`
+with the merge. It counts HappyUI's `Strings` sources as well as the
+catalogs, so an upstream `Strings` file can change it even when no catalog
+changed; a stale fixture fails `TranslationCatalogTests`.
