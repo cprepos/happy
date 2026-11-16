@@ -287,9 +287,12 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
         /// `write`, `upload`, `post`, `payment`, `account_change`,
         /// `destructive`, or one a newer bridge adds.
         public var kind: String
-        /// One sentence: "The agent wants to change account settings."
+        /// One sentence: the agent's own words where it gave them (then
+        /// the same as `reason`), else "The agent wants to change account
+        /// settings."
         public var summary: String
-        /// Short lines: what it would do, the agent's reason, the page.
+        /// Short lines: first what kind of thing it is ("Runs a script on
+        /// this page", `Click "Save"`), then the page, then any others.
         public var details: [String]
         /// When it was asked, in ms since 1970.
         public var askedAt: Double?
@@ -297,12 +300,18 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
         /// scrubbed preview of its first 1500 or so characters. Nil for
         /// anything else, and from a bridge before it.
         public var code: String?
+        /// What the agent says it will do, in its own words: the bar's
+        /// title. Nil where it gave none. An older bridge sent it as an
+        /// "Agent says: " line, read here and taken out of `details`.
+        public var reason: String?
 
-        public init(id: String, kind: String = "write", summary: String, details: [String] = [], askedAt: Double? = nil, code: String? = nil) {
+        public init(id: String, kind: String = "write", summary: String, details: [String] = [], askedAt: Double? = nil, code: String? = nil,
+                    reason: String? = nil) {
             self.id = id; self.kind = kind; self.summary = summary; self.details = details; self.askedAt = askedAt; self.code = code
+            self.reason = reason
         }
 
-        private enum CodingKeys: String, CodingKey { case id, kind, summary, details, askedAt = "asked_at", code }
+        private enum CodingKeys: String, CodingKey { case id, kind, summary, details, askedAt = "asked_at", code, reason }
 
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -313,37 +322,48 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
             kind = (try? container.decodeIfPresent(String.self, forKey: .kind)) ?? "write"
             let said = (try? container.decodeIfPresent(String.self, forKey: .summary)) ?? ""
             summary = said.isEmpty ? "The agent wants to do something that needs your approval." : said
-            details = ((try? container.decodeIfPresent([JSONValue].self, forKey: .details)) ?? []).compactMap {
+            let lines: [String] = ((try? container.decodeIfPresent([JSONValue].self, forKey: .details)) ?? []).compactMap {
                 if case .string(let line) = $0, !line.isEmpty { return line }
                 return nil
             }
             askedAt = try? container.decodeIfPresent(Double.self, forKey: .askedAt)
             let script = try? container.decodeIfPresent(String.self, forKey: .code)
             code = script.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+            let given = (try? container.decodeIfPresent(String.self, forKey: .reason))?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            // An older bridge: the reason as an "Agent says: " line, or a
+            // line saying it gave none. Neither shows as a line.
+            let legacy = lines.first { $0.hasPrefix(Self.legacyReasonPrefix) }
+                .map { String($0.dropFirst(Self.legacyReasonPrefix.count)).trimmingCharacters(in: .whitespacesAndNewlines) }
+            reason = [given, legacy].lazy.compactMap { $0 }.first { !$0.isEmpty }
+            details = lines.filter { !$0.hasPrefix(Self.legacyReasonPrefix) && $0 != Self.legacyNoReason }
         }
 
-        /// The summary and its details as one block of text, a line each.
-        public var text: String { ([summary] + details).joined(separator: "\n") }
-
-        /// The bridge's line for the agent's own words: "Agent says: …".
-        public static let reasonPrefix = "Agent says: "
-        /// Its line for the page: "Page: …".
+        /// An older bridge's line for the agent's own words: "Agent says: …".
+        public static let legacyReasonPrefix = "Agent says: "
+        /// And its line where the agent gave none.
+        public static let legacyNoReason = "The agent didn't say why"
+        /// The bridge's line for the page: "Page: …".
         public static let pagePrefix = "Page: "
 
-        /// Why the agent asks, in its words: the "Agent says" line.
-        public var reason: String? { details.first { $0.hasPrefix(Self.reasonPrefix) } }
+        /// The bar's title: what the agent says it will do, or, where it
+        /// said nothing, the bridge's summary.
+        public var title: String { reason ?? summary }
+        /// The title and its details as one block of text, a line each.
+        public var text: String { ([title] + details).joined(separator: "\n") }
         /// The page it would act on: the "Page" line.
         public var page: String? { details.first { $0.hasPrefix(Self.pagePrefix) } }
-        /// The line that always shows under the summary: the reason, or,
-        /// without one (a click, an older bridge), the first line saying
-        /// what it would do.
-        public var lead: String? { reason ?? details.first { !$0.hasPrefix(Self.pagePrefix) } }
-        /// The details that show only once asked for: every line but the
-        /// lead and the page.
+        /// What kind of thing it is, under the title: the first line that
+        /// isn't the page ("Runs a script on this page", `Click "Save"`).
+        public var kindLine: String? { details.first { !$0.hasPrefix(Self.pagePrefix) } }
+        /// The lines that show only under Details: every line but the
+        /// kind line and the page.
         public var otherDetails: [String] {
-            let lead = lead, page = page
-            return details.filter { $0 != lead && $0 != page }
+            let kindLine = kindLine, page = page
+            return details.filter { $0 != kindLine && $0 != page }
         }
+        /// Something for Details to show: a script or other lines.
+        public var hasExtras: Bool { code != nil || !otherDetails.isEmpty }
 
         /// `{"approval_id": id}`: what approve and deny send, so a decision
         /// is only ever for the approval it was shown for.

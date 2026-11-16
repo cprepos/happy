@@ -107,30 +107,72 @@ final class LiveBrowserFeedTests: XCTestCase {
     func testAnApprovalReadsItsScriptAndTheAgentsReason() throws {
         let decode = { (json: String) in try XCTUnwrap(try JSONDecoder().decode(LiveBrowserState.self, from: Data(json.utf8)).approval) }
         let script = try decode(#"""
-        {"status":"watching","approval":{"id":"e1","kind":"write","summary":"The agent wants to change the page.",
-         "details":["Run JavaScript in the page","Agent says: Read the monthly cost table","Page: console.example.com/billing/home"],
+        {"status":"watching","approval":{"id":"e1","kind":"write","summary":"Read the monthly cost table","reason":"Read the monthly cost table",
+         "details":["Runs a script on this page","Page: console.example.com/billing/home"],
          "code":"document.querySelectorAll('table tr').length","asked_at":1}}
         """#)
         XCTAssertEqual(script.code, "document.querySelectorAll('table tr').length")
-        XCTAssertEqual(script.reason, "Agent says: Read the monthly cost table")
+        XCTAssertEqual(script.reason, "Read the monthly cost table")
+        XCTAssertEqual(script.title, "Read the monthly cost table", "the agent's words are the title")
+        XCTAssertEqual(script.kindLine, "Runs a script on this page")
         XCTAssertEqual(script.page, "Page: console.example.com/billing/home")
-        XCTAssertEqual(script.lead, script.reason, "the reason before what it would do")
-        XCTAssertEqual(script.otherDetails, ["Run JavaScript in the page"])
-        XCTAssertTrue(script.text.contains("Agent says: Read the monthly cost table"), "the alert says why")
-        XCTAssertEqual(script, LiveBrowserState.Approval(id: "e1", summary: "The agent wants to change the page.", details: script.details,
-                                                         askedAt: 1, code: "document.querySelectorAll('table tr').length"))
+        XCTAssertEqual(script.otherDetails, [])
+        XCTAssertTrue(script.hasExtras, "the script is for Details")
+        XCTAssertEqual(script.text, "Read the monthly cost table\nRuns a script on this page\nPage: console.example.com/billing/home")
+        XCTAssertEqual(script, LiveBrowserState.Approval(id: "e1", summary: "Read the monthly cost table", details: script.details,
+                                                         askedAt: 1, code: "document.querySelectorAll('table tr').length",
+                                                         reason: "Read the monthly cost table"))
 
         // An older bridge sends none; null, blank or not text is none too.
         for code in ["", #","code":null"#, #","code":"  \n""#, #","code":42"#] {
             let approval = try decode(#"{"status":"watching","approval":{"id":"e2","summary":"s","details":["Click \"Save\"","Page: a.example"]\#(code)}}"#)
             XCTAssertNil(approval.code, code)
             XCTAssertNil(approval.reason)
-            XCTAssertEqual(approval.lead, #"Click "Save""#, "no reason: what it would do")
+            XCTAssertEqual(approval.title, "s", "no reason: the summary")
+            XCTAssertEqual(approval.kindLine, #"Click "Save""#)
             XCTAssertEqual(approval.otherDetails, [])
+            XCTAssertFalse(approval.hasExtras, "nothing for Details")
         }
+        // A reason that is null, blank or not text is none.
+        for reason in [#","reason":null"#, #","reason":"  ""#, #","reason":7"#] {
+            XCTAssertNil(try decode(#"{"status":"watching","approval":{"id":"e4","summary":"s"\#(reason)}}"#).reason, reason)
+        }
+        // Other lines past the kind line and the page are extras.
+        let extra = try decode(#"{"status":"watching","approval":{"id":"e5","reason":"r","details":["k","Page: p","more"]}}"#)
+        XCTAssertEqual(extra.otherDetails, ["more"])
+        XCTAssertTrue(extra.hasExtras)
         let bare = try decode(#"{"status":"watching","approval":{"id":"e3","details":["Page: a.example"]}}"#)
-        XCTAssertNil(bare.lead, "the page is never the lead")
+        XCTAssertNil(bare.kindLine, "the page is never the kind line")
         XCTAssertEqual(bare.page, "Page: a.example")
+    }
+
+    func testAnOlderBridgesAgentSaysLineIsTheReason() throws {
+        let decode = { (json: String) in try XCTUnwrap(try JSONDecoder().decode(LiveBrowserState.self, from: Data(json.utf8)).approval) }
+        let old = try decode(#"""
+        {"status":"watching","approval":{"id":"e1","kind":"write","summary":"The agent wants to change the page.",
+         "details":["Run JavaScript in the page","Agent says: Read the monthly cost table","Page: console.example.com/billing/home"],"code":"1"}}
+        """#)
+        XCTAssertEqual(old.reason, "Read the monthly cost table")
+        XCTAssertEqual(old.title, "Read the monthly cost table")
+        XCTAssertEqual(old.summary, "The agent wants to change the page.")
+        XCTAssertEqual(old.details, ["Run JavaScript in the page", "Page: console.example.com/billing/home"], "the line goes from the details")
+        XCTAssertEqual(old.kindLine, "Run JavaScript in the page")
+        XCTAssertEqual(old.otherDetails, [])
+        // "The agent didn't say why": no reason, and no line.
+        let silent = try decode(#"""
+        {"status":"watching","approval":{"id":"e2","summary":"The agent wants to change the page.",
+         "details":["Run JavaScript in the page","The agent didn't say why","Page: a.example"]}}
+        """#)
+        XCTAssertNil(silent.reason)
+        XCTAssertEqual(silent.title, "The agent wants to change the page.")
+        XCTAssertEqual(silent.details, ["Run JavaScript in the page", "Page: a.example"])
+        XCTAssertFalse(silent.hasExtras)
+        // A reason given wins over a stray "Agent says:" line, which goes.
+        let both = try decode(#"{"status":"watching","approval":{"id":"e3","reason":"new","details":["Agent says: old","Page: a.example"]}}"#)
+        XCTAssertEqual(both.reason, "new")
+        XCTAssertEqual(both.details, ["Page: a.example"])
+        // An empty "Agent says:" is no reason.
+        XCTAssertNil(try decode(#"{"status":"watching","approval":{"id":"e4","details":["Agent says:  "]}}"#).reason)
     }
 
     func testApproveAndDenyAreTheLinksOwn() throws {
