@@ -70,7 +70,7 @@ public final class WebSocketTunnel: BrowserStream, @unchecked Sendable {
     public static func open(_ stream: any BrowserStream, path: String, credential: String?, host: String? = nil, protocols: [String] = [],
                             key: Data = OAuthSignInRequest.randomBytes(16),
                             mask: @escaping @Sendable () -> [UInt8] = WebSocketTunnel.randomMask, keepalive: Bool = true) async throws -> WebSocketTunnel {
-        let unsafe: (String) -> Bool = { $0.contains(where: { $0 == "\r" || $0 == "\n" }) }
+        let unsafe: (String) -> Bool = { $0.unicodeScalars.contains(where: { $0 == "\r" || $0 == "\n" }) }
         guard path.hasPrefix("/"), !path.contains(where: { $0 == "\r" || $0 == "\n" || $0 == " " }),
               !(credential.map(unsafe) ?? false), !(host.map(unsafe) ?? false), host?.isEmpty != true,
               !protocols.contains(where: { $0.isEmpty || unsafe($0) || $0.contains(",") || $0.contains(" ") })
