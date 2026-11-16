@@ -26,7 +26,7 @@ final class LiveBrowserApprovalBarContentTests: XCTestCase {
         XCTAssertEqual(content.bodyHeight, 64)
         // Details on the buttons' row, at the text's start.
         assertFrame(content.toggle, rect(36, 110, 60, 36))
-        assertFrame(content.deny, rect(210, 110, 76, 36), "never under its least width")
+        assertFrame(content.deny, rect(210, 110, 76, 36))  // never under its least width
         assertFrame(content.approve, rect(294, 110, 80, 36))
         XCTAssertEqual(content.height, 158)
         XCTAssertFalse(content.toggle!.intersects(content.deny))

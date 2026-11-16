@@ -121,9 +121,8 @@ final class LiveBrowserFeedTests: XCTestCase {
                                                          askedAt: 1, code: "document.querySelectorAll('table tr').length"))
 
         // An older bridge sends none; null, blank or not text is none too.
-        for code in ["", #","code":null"#, #","code":"  
-""#, #","code":42"#] {
-            let approval = try decode(#"{"status":"watching","approval":{"id":"e2","summary":"s","details":["Click "Save"","Page: a.example"]\#(code)}}"#)
+        for code in ["", #","code":null"#, #","code":"  \n""#, #","code":42"#] {
+            let approval = try decode(#"{"status":"watching","approval":{"id":"e2","summary":"s","details":["Click \"Save\"","Page: a.example"]\#(code)}}"#)
             XCTAssertNil(approval.code, code)
             XCTAssertNil(approval.reason)
             XCTAssertEqual(approval.lead, #"Click "Save""#, "no reason: what it would do")
