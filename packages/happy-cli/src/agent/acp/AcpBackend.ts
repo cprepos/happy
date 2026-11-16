@@ -828,7 +828,7 @@ export class AcpBackend implements AgentBackend {
             logger.debug(`[AcpBackend] Resuming session ${resumeSessionId} via ${method}`);
             this.replayingHistory = method === 'session/load';
             const request = method === 'session/resume'
-              ? this.connection!.unstable_resumeSession({ sessionId: resumeSessionId, cwd: this.options.cwd, mcpServers: mcpServers as unknown as NewSessionRequest['mcpServers'] })
+              ? this.connection!.resumeSession({ sessionId: resumeSessionId, cwd: this.options.cwd, mcpServers: mcpServers as unknown as NewSessionRequest['mcpServers'] })
               : this.connection!.loadSession({ sessionId: resumeSessionId, cwd: this.options.cwd, mcpServers: mcpServers as unknown as NewSessionRequest['mcpServers'] });
             openedSession = await Promise.race([
               startupFailurePromise,

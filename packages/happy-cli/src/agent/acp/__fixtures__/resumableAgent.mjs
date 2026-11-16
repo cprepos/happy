@@ -70,7 +70,7 @@ connection = new AgentSideConnection(() => ({
     });
     return {};
   },
-  async unstable_resumeSession(params) {
+  async resumeSession(params) {
     requireSession(params.sessionId);
     return {};
   },
