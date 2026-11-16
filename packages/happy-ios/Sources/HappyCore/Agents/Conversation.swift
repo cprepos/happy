@@ -579,13 +579,12 @@ public actor Conversation {
     // MARK: Life
 
     public func start() async {
-        guard beginStart() else { return }; defer { starting = false } // plugins
+        guard beginStart() else { return }; defer { endStart() } // plugins
         guard following == nil else { return }
         if creation == nil, !holdsHome { holdsHome = store.chatsFirst.opening() }
         do { try await checkpointClaim(for: "conversation:\(agentId)").value }
         catch {
             checkpointClaims.removeValue(forKey: "conversation:\(agentId)")
-            Self.note("claim failed for \(agentId)")
             letHomeAsk()
             snapshot.error = "Could not open this conversation on this device."; publish(); return
         }

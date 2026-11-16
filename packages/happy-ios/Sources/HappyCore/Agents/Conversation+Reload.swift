@@ -82,6 +82,14 @@ extension Conversation {
         return true
     }
 
+    /// `start`'s deferred last step: it is no longer underway. Left not
+    /// following and not stopped, its checkpoint claim failed (every other
+    /// way out either follows or was stopped), which the log notes.
+    func endStart() {
+        starting = false
+        if following == nil, !stopped { Self.note("claim failed for \(agentId)") }
+    }
+
     #if canImport(OSLog)
     private static let logger = Logger(subsystem: "app.happy", category: "Conversation")
     #endif
