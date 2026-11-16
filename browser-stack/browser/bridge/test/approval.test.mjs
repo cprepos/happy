@@ -97,7 +97,8 @@ test('scrubbing: typed text, values, queries and tool arguments never reach the 
     assert.ok(s.details.includes('Page: accounts.example.com/settings/password'));
 
     const tool = approvalSummary({ kind: 'account_change', origin: 'tool_call', reason: 'Approve browser.set_cookies with {"value":"sekrit-cookie"}', action: { action: 'request_human_takeover', text: 'browser.set_cookies sha256:0123' } }, 'https://x.example/a?b=c');
-    assert.deepEqual(tool.details, ['Set cookies in the browser', 'Page: x.example/a']);
+    assert.deepEqual(tool.details, ['Set cookies in the browser', 'The agent didn\'t say why', 'Page: x.example/a']);
+    assert.equal(tool.code, null);
     assert.ok(!JSON.stringify(tool).includes('sekrit'), 'never a tool argument preview');
 
     assert.equal(scrubReason('log in with password: abc123 and api key=XYZ'), 'log in with password: ••• and api key=•••');
@@ -258,7 +259,14 @@ test('LAN listener: approve works on /live, /api stays 404, Host and allowlist s
 const UP_TOOLS = [
     { name: 'browser.execute_action', description: 'Act.', inputSchema: { type: 'object', properties: { session_id: { type: 'string' }, action: { type: 'object' }, approval_id: { type: 'string' } } } },
     { name: 'browser.get_session', description: 'Get.', inputSchema: { type: 'object', properties: { session_id: { type: 'string' } } } },
+    { name: 'browser.eval_js', description: 'Eval.', inputSchema: { type: 'object', additionalProperties: false, required: ['expression'], properties: { session_id: { type: 'string' }, expression: { type: 'string' }, approval_id: { type: 'string' } } } },
 ];
+const EVAL_RECORD = (id) => ({
+    id, session_id: 'sess1', kind: 'write', status: 'pending', origin: 'tool_call',
+    reason: `Approve browser.eval_js with {"expression":"fetch('/x?k=${SECRET_TEXT}')"}`,
+    action: { action: 'request_human_takeover', text: 'browser.eval_js sha256:0123abcd' },
+    observation: { url: 'https://billing.example.com/home?acct=9' },
+});
 function fakeUpstream() {
     const calls = [];
     return {
@@ -267,6 +275,13 @@ function fakeUpstream() {
         async callTool(name, args) {
             calls.push({ name, args });
             if (name === 'browser.get_session') return { result: { content: [{ type: 'text', text: '{"id":"sess1","status":"active"}' }], isError: false } };
+            if (name === 'browser.eval_js') {
+                assert.ok(!('reason' in args), 'the bridge\'s reason never goes upstream');
+                if (args.approval_id) return { result: { content: [{ type: 'text', text: '42' }], isError: false } };
+                if (!client.approvals.has('apE')) client.approvals.set('apE', EVAL_RECORD('apE'));
+                const payload = { status: 'approval_required', approval_id: 'apE', approval: client.approvals.get('apE') };
+                return { result: { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload, isError: true } };
+            }
             if (!args.approval_id) {
                 if (!client.approvals.has('apM')) client.approvals.set('apM', approvalRecord('apM', 'sess1'));
                 const payload = { status: 'approval_required', message: 'needs approval', approval_id: 'apM', approval: client.approvals.get('apM') };
@@ -404,7 +419,7 @@ test('yolo: an approval is approved at once with the yolo note, recorded (last 5
     assert.equal(s.approval, null, 'never shown');
     assert.deepEqual(s.auto_approved.map((e) => e.id), ['y6', 'y5', 'y4', 'y3', 'y2']);
     assert.deepEqual(Object.keys(s.auto_approved[0]).sort(), ['at', 'id', 'summary']);
-    assert.equal(s.auto_approved[0].summary, 'The agent wants to change account settings.');
+    assert.equal(s.auto_approved[0].summary, 'The agent wants to change account settings. Agent says: type ••• into the new password field');
     assert.ok(!JSON.stringify(s).includes(SECRET_TEXT));
     assert.ok(logs.some((l) => /auto-approved y6/.test(l)));
 
@@ -458,4 +473,124 @@ test('mcp: with yolo on, the held action runs again at once without waiting for 
     assert.deepEqual(client.calls.approve, [{ id: 'apM', comment: AUTO_APPROVE_NOTE }]);
     assert.ok(!h.out.some((m) => m.method === 'notifications/progress' && /approve or deny/.test(m.params.message)), 'never waits');
     assert.equal((await state(id)).auto_approved[0].id, 'apM');
+});
+
+// ── What the approval says: the agent's reason, the script, the click's target ──
+test('summary: a tool call shows the bridge\'s reason and, for eval_js only, the scrubbed script', () => {
+    const code = `// read the table\nconst t = document.querySelector('table');\nconst password = "${SECRET_TEXT}";\nreturn t.innerText;`;
+    const s = approvalSummary(EVAL_RECORD('e1'), null, { reason: `Read the monthly cost table, token=${SECRET_TEXT}`, code });
+    assert.deepEqual(s.details, [
+        'Run JavaScript in the page',
+        'Agent says: Read the monthly cost table, token=•••',
+        'Page: billing.example.com/home',
+    ]);
+    assert.match(s.code, /^\/\/ read the table\nconst t = document\.querySelector\('table'\);\n/, 'line breaks kept');
+    assert.match(s.code, /password = •••/);
+    assert.ok(!JSON.stringify(s).includes(SECRET_TEXT), 'never the secret, in the reason or the code');
+    assert.ok(!JSON.stringify(s).includes('k='), 'never the controller\'s argument preview');
+    const long = approvalSummary(EVAL_RECORD('e2'), null, { reason: 'x', code: 'a();\n'.repeat(1000) });
+    assert.ok(long.code.length <= 1500 && long.code.endsWith('…'));
+    // Another tool: the reason, but never a code preview; no reason: says so.
+    const cookie = { ...EVAL_RECORD('e3'), action: { action: 'request_human_takeover', text: 'browser.set_cookies sha256:01' } };
+    const c = approvalSummary(cookie, null, { reason: 'Keep the session', code: 'x' });
+    assert.equal(c.code, null);
+    assert.equal(c.details[1], 'Agent says: Keep the session');
+    assert.equal(approvalSummary(EVAL_RECORD('e4')).details[1], "The agent didn't say why");
+    // An action's own approval never takes a code preview either.
+    assert.equal(approvalSummary(approvalRecord('e5', 'sess1'), null, { code: 'x' }).code, null);
+});
+
+test('summary: a click names its target, clipped and scrubbed', () => {
+    const rec = (action) => ({ kind: 'post', origin: 'action', action });
+    assert.equal(approvalSummary(rec({ action: 'click', label: 'Post comment' })).details[0], 'Click "Post comment"');
+    assert.equal(approvalSummary(rec({ action: 'click' })).details[0], 'Click on the page');
+    assert.equal(approvalSummary(rec({ action: 'click', label: '  ' })).details[0], 'Click on the page');
+    const long = approvalSummary(rec({ action: 'click', label: 'Delete '.repeat(30) })).details[0];
+    assert.ok(long.length <= 'Click ""'.length + 60 && long.endsWith('…"'));
+    assert.equal(approvalSummary(rec({ action: 'click', label: `Pay with 4111111111111111` })).details[0], 'Click "Pay with •••"');
+});
+
+test('mcp: eval_js needs a reason, which is refused before upstream and never forwarded', async () => {
+    await link();
+    const h = mcpHarness();
+    for (const args of [{ session_id: 'sess1', expression: '1' }, { session_id: 'sess1', expression: '1', reason: '   ' }, { session_id: 'sess1', expression: '1', reason: 'x'.repeat(301) }, { session_id: 'sess1', expression: '1', reason: 7 }]) {
+        const res = await h.call(1, 'browser_eval_js', args);
+        assert.equal(res.result.isError, true);
+        assert.match(res.result.content[0].text, /^Error: nothing was run\. .*reason/);
+        h.out.length = 0;
+    }
+    assert.equal(h.upstream.calls.filter((c) => c.name === 'browser.eval_js').length, 0, 'never reached upstream');
+});
+
+test('mcp: tools/list adds the reason to eval_js (required) and the other tool-call tools (optional)', async () => {
+    const out = [];
+    const up = { async listTools() { return [...UP_TOOLS, { name: 'browser.set_cookies', description: 'C.', inputSchema: { type: 'object', properties: { session_id: { type: 'string' } } } }]; }, async callTool() { return { result: { content: [] } }; } };
+    const mcp = createMcpServer({ bridgeUrl: base, bridgeToken: BRIDGE_TOKEN, write: (m) => out.push(m), upstream: up, retryMs: 0 });
+    await mcp.handle({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+    const tools = out.find((m) => m.id === 1).result.tools;
+    const ev = tools.find((t) => t.name === 'browser_eval_js');
+    assert.deepEqual(ev.inputSchema.required, ['expression', 'reason']);
+    assert.equal(ev.inputSchema.properties.reason.maxLength, 300);
+    assert.match(ev.inputSchema.properties.reason.description, /what this does and why/);
+    assert.equal(ev.inputSchema.additionalProperties, false);
+    assert.match(ev.description, /reason/);
+    const ck = tools.find((t) => t.name === 'browser_set_cookies');
+    assert.ok(ck.inputSchema.properties.reason);
+    assert.deepEqual(ck.inputSchema.required, []);
+    assert.equal(tools.find((t) => t.name === 'browser_execute_action').inputSchema.properties.reason, undefined);
+});
+
+test('mcp: eval_js with a reason shows "Agent says" and the code; deny stops it', async () => {
+    const { id } = await link();
+    const h = mcpHarness();
+    const expression = `(() => { const token = "${SECRET_TEXT}"; return document.title; })()`;
+    const pending = h.call(1, 'browser_eval_js', { session_id: 'sess1', expression, reason: 'Read the page title' });
+    const a = await untilPending(id);
+    assert.deepEqual(Object.keys(a).sort(), ['asked_at', 'code', 'details', 'id', 'kind', 'summary']);
+    assert.equal(a.id, 'apE');
+    assert.ok(a.details.includes('Agent says: Read the page title'));
+    assert.ok(a.details.includes('Run JavaScript in the page'));
+    assert.match(a.code, /return document\.title/);
+    assert.ok(!JSON.stringify(a).includes(SECRET_TEXT));
+    await post(`/live/${id}/deny`, { approval_id: 'apE' });
+    const res = await pending;
+    assert.equal(res.result.structuredContent.status, 'denied');
+    const evals = h.upstream.calls.filter((c) => c.name === 'browser.eval_js');
+    assert.equal(evals.length, 1);
+    assert.deepEqual(Object.keys(evals[0].args).sort(), ['expression', 'session_id']);
+});
+
+test('approval text: kept with its approval id, set once, never from another session', async () => {
+    const { id } = await link('sess1');
+    await link('sess2');
+    client.approvals.set('t1', EVAL_RECORD('t1'));
+    // Another session cannot register (or word) this one.
+    assert.equal((await api('/api/approval', { session_id: 'sess2', approval_id: 't1', reason: 'evil' })).status, 403);
+    await api('/api/approval', { session_id: 'sess1', approval_id: 't1', reason: 'Read the table', code: 'a()' });
+    await api('/api/approval', { session_id: 'sess1', approval_id: 't1', reason: 'changed', code: 'b()' });
+    const a = (await state(id)).approval;
+    assert.ok(a.details.includes('Agent says: Read the table'));
+    assert.equal(a.code, 'a()');
+    // Non-string text is ignored.
+    client.approvals.set('t2', EVAL_RECORD('t2'));
+    client.approvals.get('t1').status = 'rejected';
+    await api('/api/approval', { session_id: 'sess1', approval_id: 't2', reason: { x: 1 }, code: 5 });
+    const b = (await state(id)).approval;
+    assert.equal(b.id, 't2');
+    assert.equal(b.code, null);
+    assert.ok(b.details.includes("The agent didn't say why"));
+});
+
+test('mcp: browser yolo still runs eval_js at once, and its record carries the reason', async () => {
+    const { id } = await link();
+    await post(`/live/${id}/auto`, { on: true });
+    const h = mcpHarness({ approvalWaitS: 1 });
+    const res = await h.call(1, 'browser_eval_js', { session_id: 'sess1', expression: '6*7', reason: 'Work out the answer' });
+    assert.equal(res.result.isError, false);
+    assert.match(res.result.content.map((c) => c.text).join('\n'), /Yolo mode is on[\s\S]*42/);
+    const evals = h.upstream.calls.filter((c) => c.name === 'browser.eval_js');
+    assert.equal(evals.length, 2);
+    assert.equal(evals[1].args.approval_id, 'apE');
+    assert.ok(!('reason' in evals[1].args));
+    assert.equal((await state(id)).auto_approved[0].summary, 'The agent wants to change the page. Agent says: Work out the answer');
 });

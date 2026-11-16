@@ -12,6 +12,7 @@ import { createInterface } from 'node:readline';
 import { loadConfig, readSecret } from './lib/config.mjs';
 import { createUpstreamMcp, localToolName } from './lib/upstream.mjs';
 import { createSecretGate, SECRET_TOOL_NAMES } from './lib/secrets.mjs';
+import { REASON_TOOLS, REASON_MAX_INPUT, CODE_MAX } from './lib/approval.mjs';
 import { createAgentChatLookup } from '../../identity/agentchat.mjs';
 import { chatFromMeta, chatOfMeta, fillerChatOf, withoutChatMeta } from '../../identity/chatmeta.mjs';
 
@@ -216,6 +217,45 @@ export function withScopeParam(schema) {
 // captured_at by up to about a second.
 const SCREENSHOT_NOTE = ' By default (scope "screen") the image is the browser as the live view shows it, with the tab strip and the address bar showing the URL, and the result carries the URL, title, capture time (captured_at, UTC, and tz) and the sha256 of the capture as taken and as filed; scope "page" gives the page content only. With view "desktop" the desktop panel across the top shows the clock the screen showed (its own, nothing is drawn on the image); it ticks once a second, so it can be up to about 1 s behind captured_at. View "tab" is the browser window alone. Personal data in the image is redacted unless redact is false (full-fidelity evidence); that redaction is the only change made to the captured pixels, and the address bar and the panel are never redacted.';
 
+// The bridge's own `reason` argument on the tool-call tools that may need the user's approval
+// (REASON_TOOLS), shown to the user as "Agent says: ..." on the approval. Required on
+// browser_eval_js, whose approval would otherwise be a bare script. Never passed on upstream.
+export const REASON_REQUIRED = new Set(['browser_eval_js']);
+const REASON_DESCRIPTION = 'In plain words, what this does and why, e.g. \'Read the monthly cost table from the Billing page\'. Shown to the user when they are asked to approve it.';
+const reasonProp = (required) => ({ type: 'string', ...(required ? { minLength: 1 } : {}), maxLength: REASON_MAX_INPUT, description: REASON_DESCRIPTION });
+const REASON_NOTE = ' Give reason: a plain-language description of what this does and why; the user sees it when asked to approve.';
+export const REASON_MISSING = `Error: nothing was run. browser_eval_js needs a reason: say in plain words what the script does and why (1-${REASON_MAX_INPUT} characters, e.g. "Read the monthly cost table from the Billing page"), then call it again with reason added. The user sees it when asked to approve the script.`;
+const REASON_BAD = `Error: nothing was run. reason must be a string of at most ${REASON_MAX_INPUT} characters: what this does and why, in plain words.`;
+
+/** A tool's input schema with the bridge's `reason` argument added (required for eval_js). */
+export function withReasonParam(schema, required = false) {
+    const base = schema && typeof schema === 'object' && !Array.isArray(schema) ? schema : { type: 'object' };
+    const req = Array.isArray(base.required) ? base.required.filter((r) => r !== 'reason') : [];
+    return { ...base, type: 'object', properties: { ...(base.properties || {}), reason: reasonProp(required) }, required: required ? [...req, 'reason'] : req };
+}
+
+/**
+ * {reason, args} with the bridge's reason taken out of a call's arguments, or {error} to answer
+ * with when it is missing (eval_js) or malformed.
+ */
+export function takeReason(name, args) {
+    if (!REASON_TOOLS.has(name)) return { reason: null, args };
+    let reason = null;
+    if (args && typeof args === 'object' && 'reason' in args) ({ reason, ...args } = args);
+    if (reason === undefined) reason = null;
+    if (reason !== null && (typeof reason !== 'string' || reason.length > REASON_MAX_INPUT)) return { error: REASON_BAD };
+    if (typeof reason === 'string') reason = reason.trim() || null;
+    if (!reason && REASON_REQUIRED.has(name)) return { error: REASON_MISSING };
+    return { reason, args };
+}
+
+/** eval_js's script, cut to a preview the bridge scrubs again before the user sees it. */
+export function codeOf(name, args) {
+    if (name !== 'browser_eval_js') return null;
+    const e = args?.expression ?? args?.script;
+    return typeof e === 'string' && e ? e.slice(0, CODE_MAX + 200) : null;
+}
+
 /** Expose upstream tools under API-safe names, with references in descriptions renamed too. */
 export function mapUpstreamTools(tools, log = () => {}) {
     const byLocal = new Map();
@@ -228,9 +268,9 @@ export function mapUpstreamTools(tools, log = () => {}) {
         if (OWN_NAMES.has(name) || byLocal.has(name)) { log(`skipping auto-browser tool ${t.name}: name ${name} already taken`); continue; }
         byLocal.set(name, t.name);
         const description = rename(t.description || '') + (HINTS[name] || '') + (MUTATING_TOOLS.has(name) ? LOCK_HINT : '');
-        listed.push(name === 'browser_screenshot'
-            ? { ...t, name, description: description + SCREENSHOT_NOTE, inputSchema: withScopeParam(t.inputSchema) }
-            : { ...t, name, description });
+        if (name === 'browser_screenshot') listed.push({ ...t, name, description: description + SCREENSHOT_NOTE, inputSchema: withScopeParam(t.inputSchema) });
+        else if (REASON_TOOLS.has(name)) listed.push({ ...t, name, description: description + REASON_NOTE, inputSchema: withReasonParam(t.inputSchema, REASON_REQUIRED.has(name)) });
+        else listed.push({ ...t, name, description });
     }
     return { tools: listed, byLocal, rename };
 }
@@ -604,6 +644,11 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
             if (!upstreamOk) return result(id, toolResult(`Error: ${name} is an auto-browser tool, but auto-browser is not reachable right now. Is the browser stack up?`, true));
             return error(id, -32602, `unknown tool ${name}`);
         }
+        // The approval reason is the bridge's too: taken out here, refused when eval_js has none.
+        const taken = takeReason(name, args);
+        if (taken.error) return result(id, toolResult(taken.error, true));
+        args = taken.args;
+        const approvalText = { reason: taken.reason, code: codeOf(name, args) };
         // browser_screenshot's scope is the bridge's, never passed on (auto-browser refuses extra fields).
         // No scope given: "screen" with a pod of the chat's own, "page" on the shared browser.
         let scope = null;
@@ -674,7 +719,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
             // auto-browser wants the user's yes first: ask them in the live view and wait here.
             const pending = approvalRequired(out);
             if (pending) {
-                const decided = await awaitApproval(pending, args, via, signal, progress, (a) => call(via, a));
+                const decided = await awaitApproval(pending, args, via, signal, progress, (a) => call(via, a), approvalText);
                 if (signal.aborted) return;
                 if (decided.final) return result(id, await scrubOut(gate, decided.final, signal));
                 out = decided.result;
@@ -952,12 +997,16 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
     }
 
     // {final} to answer the call with, or {result} to go on with as the call's own result.
-    async function awaitApproval(pending, args, via, signal, progress, again) {
+    async function awaitApproval(pending, args, via, signal, progress, again, text = {}) {
         const sid = via?.session_id || pending.sessionId || (typeof args?.session_id === 'string' ? args.session_id : null);
         if (!sid && !via) return { result: pending.original };
         let reg;
         try {
-            reg = await bridge('/api/approval', { ...linkRef(sid, via), approval_id: pending.approvalId }, signal);
+            const extra = {
+                ...(typeof text.reason === 'string' && text.reason ? { reason: text.reason } : {}),
+                ...(typeof text.code === 'string' && text.code ? { code: text.code } : {}),
+            };
+            reg = await bridge('/api/approval', { ...linkRef(sid, via), approval_id: pending.approvalId, ...extra }, signal);
         } catch (err) {
             if (signal.aborted) return { final: null };
             log(`could not show approval ${pending.approvalId} to the user: ${err.message}`);
@@ -1022,7 +1071,10 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
                         'Some actions (changing account settings, posting, payments, deleting) need the user\'s approval: the call ' +
                         'then waits while the user is asked to Approve or Deny in the live view, and runs once they approve. If it ' +
                         'comes back denied, do not retry; if it comes back approval_pending, do not repeat it: tell the user an ' +
-                        'approval is waiting and call browser_wait_for_human.',
+                        'approval is waiting and call browser_wait_for_human. ' +
+                        'Give every browser_eval_js call (and the other tools that take one) a reason: in plain words, what it ' +
+                        'does and why, e.g. "Read the monthly cost table from the Billing page". The user sees it with the ' +
+                        'script when asked to approve; a script without one is refused.',
                 });
             }
             case 'ping':

@@ -178,7 +178,7 @@ test('a process with no chat id names chat "none"; the tools are listed and work
         assert.deepEqual(own.map((x) => x.chat), ['none', 'none', 'none'], 'never empty, never taken from the arguments');
         assert.ok(filler.requests.every((x) => x.chat === 'none'));
         // The taint gate still applies to a no-chat process.
-        const ev = await n.call(5, 'browser_eval_js', { session_id: 's1', script: '1' });
+        const ev = await n.call(5, 'browser_eval_js', { session_id: 's1', script: '1', reason: 'Check the page' });
         assert.match(ev.result.content[0].text, /Refused/);
     } finally { await filler.close(); }
 });
@@ -191,7 +191,7 @@ test('after a fill: read-back tools refused, every result and error scrubbed', a
         assert.match(before.result.content[0].text, /sees hunter2/, 'nothing tainted yet: values pass');
         assert.equal((await h.call(2, 'browser_fill_secret', { session_id: 's1', element_id: 'p1', name: 'github.password' })).result.isError, false);
         const n = h.calls.length;
-        const ev = await h.call(3, 'browser_eval_js', { session_id: 's1', script: 'document.querySelector("input").value' });
+        const ev = await h.call(3, 'browser_eval_js', { session_id: 's1', script: 'document.querySelector("input").value', reason: 'Read the field' });
         assert.equal(ev.result.isError, true);
         assert.match(ev.result.content[0].text, /Refused/);
         assert.equal(h.calls.length, n, 'refused calls never reach auto-browser');
