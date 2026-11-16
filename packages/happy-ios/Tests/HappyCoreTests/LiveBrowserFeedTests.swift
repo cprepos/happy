@@ -104,6 +104,36 @@ final class LiveBrowserFeedTests: XCTestCase {
         XCTAssertNil(try decode(#"{"status":"done","approval":{"id":"x1","summary":"s"}}"#).pendingApproval)
     }
 
+    func testAnApprovalReadsItsScriptAndTheAgentsReason() throws {
+        let decode = { (json: String) in try XCTUnwrap(try JSONDecoder().decode(LiveBrowserState.self, from: Data(json.utf8)).approval) }
+        let script = try decode(#"""
+        {"status":"watching","approval":{"id":"e1","kind":"write","summary":"The agent wants to change the page.",
+         "details":["Run JavaScript in the page","Agent says: Read the monthly cost table","Page: console.example.com/billing/home"],
+         "code":"document.querySelectorAll('table tr').length","asked_at":1}}
+        """#)
+        XCTAssertEqual(script.code, "document.querySelectorAll('table tr').length")
+        XCTAssertEqual(script.reason, "Agent says: Read the monthly cost table")
+        XCTAssertEqual(script.page, "Page: console.example.com/billing/home")
+        XCTAssertEqual(script.lead, script.reason, "the reason before what it would do")
+        XCTAssertEqual(script.otherDetails, ["Run JavaScript in the page"])
+        XCTAssertTrue(script.text.contains("Agent says: Read the monthly cost table"), "the alert says why")
+        XCTAssertEqual(script, LiveBrowserState.Approval(id: "e1", summary: "The agent wants to change the page.", details: script.details,
+                                                         askedAt: 1, code: "document.querySelectorAll('table tr').length"))
+
+        // An older bridge sends none; null, blank or not text is none too.
+        for code in ["", #","code":null"#, #","code":"  
+""#, #","code":42"#] {
+            let approval = try decode(#"{"status":"watching","approval":{"id":"e2","summary":"s","details":["Click "Save"","Page: a.example"]\#(code)}}"#)
+            XCTAssertNil(approval.code, code)
+            XCTAssertNil(approval.reason)
+            XCTAssertEqual(approval.lead, #"Click "Save""#, "no reason: what it would do")
+            XCTAssertEqual(approval.otherDetails, [])
+        }
+        let bare = try decode(#"{"status":"watching","approval":{"id":"e3","details":["Page: a.example"]}}"#)
+        XCTAssertNil(bare.lead, "the page is never the lead")
+        XCTAssertEqual(bare.page, "Page: a.example")
+    }
+
     func testApproveAndDenyAreTheLinksOwn() throws {
         let link = try XCTUnwrap(LiveBrowserLink(id: Self.a))
         XCTAssertEqual(link.approveURL.absoluteString, "\(Self.live(Self.a))/approve")

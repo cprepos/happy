@@ -293,12 +293,16 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
         public var details: [String]
         /// When it was asked, in ms since 1970.
         public var askedAt: Double?
+        /// What a script would run (`browser_eval_js`): the bridge's
+        /// scrubbed preview of its first 1500 or so characters. Nil for
+        /// anything else, and from a bridge before it.
+        public var code: String?
 
-        public init(id: String, kind: String = "write", summary: String, details: [String] = [], askedAt: Double? = nil) {
-            self.id = id; self.kind = kind; self.summary = summary; self.details = details; self.askedAt = askedAt
+        public init(id: String, kind: String = "write", summary: String, details: [String] = [], askedAt: Double? = nil, code: String? = nil) {
+            self.id = id; self.kind = kind; self.summary = summary; self.details = details; self.askedAt = askedAt; self.code = code
         }
 
-        private enum CodingKeys: String, CodingKey { case id, kind, summary, details, askedAt = "asked_at" }
+        private enum CodingKeys: String, CodingKey { case id, kind, summary, details, askedAt = "asked_at", code }
 
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -314,10 +318,32 @@ public struct LiveBrowserState: Equatable, Sendable, Decodable {
                 return nil
             }
             askedAt = try? container.decodeIfPresent(Double.self, forKey: .askedAt)
+            let script = try? container.decodeIfPresent(String.self, forKey: .code)
+            code = script.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
         }
 
         /// The summary and its details as one block of text, a line each.
         public var text: String { ([summary] + details).joined(separator: "\n") }
+
+        /// The bridge's line for the agent's own words: "Agent says: …".
+        public static let reasonPrefix = "Agent says: "
+        /// Its line for the page: "Page: …".
+        public static let pagePrefix = "Page: "
+
+        /// Why the agent asks, in its words: the "Agent says" line.
+        public var reason: String? { details.first { $0.hasPrefix(Self.reasonPrefix) } }
+        /// The page it would act on: the "Page" line.
+        public var page: String? { details.first { $0.hasPrefix(Self.pagePrefix) } }
+        /// The line that always shows under the summary: the reason, or,
+        /// without one (a click, an older bridge), the first line saying
+        /// what it would do.
+        public var lead: String? { reason ?? details.first { !$0.hasPrefix(Self.pagePrefix) } }
+        /// The details that show only once asked for: every line but the
+        /// lead and the page.
+        public var otherDetails: [String] {
+            let lead = lead, page = page
+            return details.filter { $0 != lead && $0 != page }
+        }
 
         /// `{"approval_id": id}`: what approve and deny send, so a decision
         /// is only ever for the approval it was shown for.
