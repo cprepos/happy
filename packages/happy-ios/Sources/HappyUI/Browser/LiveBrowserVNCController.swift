@@ -42,6 +42,8 @@ final class LiveBrowserVNCController: UIViewController {
     /// Reads the state now: whether the page's focus is in a field, nil
     /// when the bridge doesn't say (one before `editable_focused`).
     var readFocus: (@MainActor () async -> Bool?)?
+    /// `controlsTop` moved: the bar, or the keyboard under it, came or went.
+    var onControlsMoved: (() -> Void)?
 
     let screen = LiveBrowserVNCView()
     private let bar = UIToolbar()
@@ -51,6 +53,7 @@ final class LiveBrowserVNCController: UIViewController {
     private let toast = UILabel()
     private var toastClear: Task<Void, Never>?
     private lazy var keyRow = LiveBrowserVNCKeyRow(screen: screen)
+    private var placedControlsTop: CGFloat?
 
     private var client: VNCClient?
     private var session: Task<Void, Never>?
@@ -159,6 +162,22 @@ final class LiveBrowserVNCController: UIViewController {
         start()
     }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        let top = controlsTop
+        guard top != placedControlsTop else { return }
+        placedControlsTop = top
+        onControlsMoved?()
+    }
+
+    /// The top of the controls at the bottom, in this view: the bar's, or
+    /// the key row's over the keyboard while it shows. What stands over
+    /// the page (the approval bar) keeps above it.
+    var controlsTop: CGFloat {
+        let row = keyRow.window != nil ? keyRow.convert(keyRow.bounds, to: view).minY : .infinity
+        return min(bar.frame.minY, row)
+    }
+
     // MARK: The bar
 
     private func configureBar() {
@@ -239,7 +258,7 @@ final class LiveBrowserVNCController: UIViewController {
         }
     }
 
-    private func showKeyboard() {
+    func showKeyboard() {
         screen.showsKeyboard = true
         screen.keyRow = keyRow
         screen.becomeFirstResponder()

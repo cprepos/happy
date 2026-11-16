@@ -21,8 +21,11 @@ import CoreGraphics
 /// on an iPad or a Mac, or while the person holds the browser (noVNC or
 /// the native viewer has the whole page), it floats over the bottom,
 /// compact (no details), centred clear of the phone's side strip and no
-/// wider than `Metrics.maxWidth`, 12 above the safe area. In the chat it
-/// stands on the status line (`anchor`), as wide as the composer card.
+/// wider than `Metrics.maxWidth`, 12 above the safe area, or above
+/// `floor`, the top of the held page's own controls at the bottom (the
+/// native viewer's bar, the keyboard's key row over it, noVNC's keyboard
+/// button), where it is higher. In the chat it stands on the status line
+/// (`anchor`), as wide as the composer card.
 ///
 /// The bar's height is what its content measures at `width`, held to
 /// `maxHeight` (`frame(height:)`).
@@ -37,6 +40,9 @@ public struct LiveBrowserApprovalBarLayout: Equatable, Sendable {
         /// The least room under the picture the bar stands in; less, and
         /// it floats over the bottom instead.
         public static let minRoom: CGFloat = 72
+        /// What noVNC's page keeps at its bottom for its keyboard button,
+        /// which is inside the page where nothing here can measure it.
+        public static let noVNCReserve: CGFloat = 56
         /// A floating bar's tallest, and the chat's.
         public static let overlayMaxHeight: CGFloat = 132
         public static let chatMaxHeight: CGFloat = 168
@@ -52,8 +58,9 @@ public struct LiveBrowserApprovalBarLayout: Equatable, Sendable {
     public enum Place: Equatable, Sendable {
         /// The full screen: the picture's frame (the page's, where it is
         /// the whole screen), whether this is a phone, whether the person
-        /// holds the browser, and a sideways phone's column of controls.
-        case fullScreen(picture: CGRect, phone: Bool, held: Bool, strip: CGRect?)
+        /// holds the browser, a sideways phone's column of controls, and
+        /// the top of the controls at the bottom, if any.
+        case fullScreen(picture: CGRect, phone: Bool, held: Bool, strip: CGRect?, floor: CGFloat? = nil)
         /// The chat: the composer card, and the top of what stands on it
         /// (the status line, the voice strip or the keyboard).
         case chat(card: CGRect, anchor: CGFloat)
@@ -80,9 +87,10 @@ public struct LiveBrowserApprovalBarLayout: Equatable, Sendable {
     public init(size: CGSize, safeArea: LayoutInsets, place: Place) {
         typealias M = Metrics
         switch place {
-        case let .fullScreen(picture, phone, held, strip):
+        case let .fullScreen(picture, phone, held, strip, floor):
             let top = picture.maxY + M.margin
-            let room = size.height - safeArea.bottom - M.margin - top
+            let bottom = min(size.height - safeArea.bottom, floor ?? .infinity)
+            let room = bottom - M.margin - top
             if phone, !held, strip == nil, room >= M.minRoom {
                 mode = .belowPicture
                 x = safeArea.left + M.margin
@@ -97,7 +105,7 @@ public struct LiveBrowserApprovalBarLayout: Equatable, Sendable {
                 mode = .overlay
                 width = min(M.maxWidth, span)
                 x = (left + (right - left - width) / 2).rounded()
-                edge = size.height - safeArea.bottom - M.margin
+                edge = bottom - M.margin
                 maxHeight = max(0, min(M.overlayMaxHeight, edge - safeArea.top - M.margin))
                 showsDetails = false
             }
@@ -109,6 +117,15 @@ public struct LiveBrowserApprovalBarLayout: Equatable, Sendable {
             maxHeight = max(0, min(M.chatMaxHeight, edge - safeArea.top - M.gap))
             showsDetails = true
         }
+    }
+
+    /// noVNC's `floor`: its keyboard button's reserve over the bottom of
+    /// its page, where the page reaches the safe area's bottom (an iPad,
+    /// a sideways phone); nil where the page ends above it (a phone
+    /// upright, its picture's height), the bottom being clear there.
+    public static func noVNCFloor(size: CGSize, safeArea: LayoutInsets, page: CGRect) -> CGFloat? {
+        let bottom = size.height - safeArea.bottom
+        return page.maxY >= bottom ? bottom - Metrics.noVNCReserve : nil
     }
 
     /// Yolo's "Yolo mode enabled" in the full screen: a line under the

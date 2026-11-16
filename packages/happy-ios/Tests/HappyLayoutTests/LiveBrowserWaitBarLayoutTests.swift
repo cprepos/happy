@@ -49,6 +49,37 @@ final class LiveBrowserWaitBarLayoutTests: XCTestCase {
         }
     }
 
+    func testHeldItStandsAboveTheViewersBarAndRisesWithTheKeyboard() {
+        let page = LiveBrowserFullScreenLayout(size: size, safeArea: safe, top: 116, phone: true, aspect: nil)
+        for toolbar in [rect(0, 791, 402, 49), rect(0, 445, 402, 49)] {
+            let bar = Bar(size: size, safeArea: safe, place: .fullScreen(picture: page.content, phone: true, held: true, strip: nil, floor: toolbar.minY))
+            let frame = bar.frame(height: 60)
+            assertFrame(frame, rect(12, toolbar.minY - 12 - 60, 378, 60))
+            XCTAssertFalse(frame.intersects(toolbar))
+        }
+    }
+
+    func testSidewaysHeldItStandsAboveTheViewersBar() throws {
+        let sideways = CGSize(width: 874, height: 402)
+        let insets = LayoutInsets(top: 0, left: 62, bottom: 21, right: 62)
+        let page = LiveBrowserFullScreenLayout(size: sideways, safeArea: insets, top: 0, phone: true, aspect: nil)
+        let strip = try XCTUnwrap(page.strip)
+        let toolbar = rect(62, 337, 698, 44)
+        let bar = Bar(size: sideways, safeArea: insets, place: .fullScreen(picture: page.content, phone: true, held: true, strip: strip, floor: toolbar.minY))
+        let frame = bar.frame(height: 60)
+        assertFrame(frame, rect(151, 265, 520, 60))
+        XCTAssertFalse(frame.intersects(toolbar))
+        XCTAssertFalse(frame.intersects(strip))
+    }
+
+    func testOnNoVNCsPageOnAnIPadItKeepsTheReserveClear() throws {
+        let iPad = CGSize(width: 1194, height: 834), insets = LayoutInsets(top: 24, bottom: 20)
+        let whole = CGRect(origin: .zero, size: iPad)
+        let floor = try XCTUnwrap(Bar.noVNCFloor(size: iPad, safeArea: insets, page: whole))
+        let bar = Bar(size: iPad, safeArea: insets, place: .fullScreen(picture: whole, phone: false, held: true, strip: nil, floor: floor))
+        assertFrame(bar.frame(height: 60), rect(337, 834 - 20 - 56 - 12 - 60, 520, 60))
+    }
+
     func testALongWaitIsHeldToAFloatingBarsMost() {
         let picture = rect(0, 116, 402, 674)
         let bar = Bar(size: size, safeArea: safe, place: .fullScreen(picture: picture, phone: true, held: false, strip: nil))

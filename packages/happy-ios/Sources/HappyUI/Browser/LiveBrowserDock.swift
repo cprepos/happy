@@ -1449,6 +1449,13 @@ final class LiveBrowserFullScreenItems: UIViewController {
             constrained = placed
         }
         content.didMove(toParent: self)
+        // The bars over the bottom follow the viewer's own bar, which the
+        // keyboard moves: at once, so they ride its animation.
+        viewer?.onControlsMoved = { [weak self] in
+            guard let self, !placingBars else { return }
+            view.setNeedsLayout()
+            view.layoutIfNeeded()
+        }
         let minimizeButton = Self.headerButton("chevron.down", Strings.LiveBrowser.minimize, "live-browser-minimize")
         minimizeButton.addAction(UIAction { [weak self] _ in self?.dock?.minimize() }, for: .touchUpInside)
         HoldTip.attach(to: minimizeButton, title: Strings.LiveBrowser.minimize, detail: Strings.LiveBrowser.Tip.minimize)
@@ -1643,6 +1650,8 @@ final class LiveBrowserFullScreenItems: UIViewController {
     /// by `LiveBrowserFullScreenLayout` always; the native viewer, which
     /// fits the picture itself over its own bar and the keyboard, only
     /// while the strip shows.
+    /// Laying out the viewer for its bar's place: its move is this pass's.
+    private var placingBars = false
     private var placesByLayout: Bool { viewer == nil && (!isNoVNC || isPhone) }
 
     private func fullScreenLayout() -> LiveBrowserFullScreenLayout {
@@ -1853,9 +1862,23 @@ final class LiveBrowserFullScreenItems: UIViewController {
 
     private func barLayout(_ layout: LiveBrowserFullScreenLayout) -> LiveBrowserApprovalBarLayout {
         let picture = stripShown || placesByLayout ? layout.content : content.view.frame
-        return LiveBrowserApprovalBarLayout(size: view.bounds.size, safeArea: LayoutInsets(view.safeAreaInsets),
+        let size = view.bounds.size, safeArea = LayoutInsets(view.safeAreaInsets)
+        // Over the held page's own controls at the bottom: the native
+        // viewer's bar (and the key row over the keyboard), noVNC's
+        // keyboard button.
+        var floor: CGFloat?
+        if let viewer, viewer.isViewLoaded {
+            // Its bar placed first: its own pass comes after this one.
+            placingBars = true
+            viewer.view.layoutIfNeeded()
+            placingBars = false
+            floor = viewer.view.convert(CGPoint(x: 0, y: viewer.controlsTop), to: view).y
+        } else if isNoVNC {
+            floor = LiveBrowserApprovalBarLayout.noVNCFloor(size: size, safeArea: safeArea, page: picture)
+        }
+        return LiveBrowserApprovalBarLayout(size: size, safeArea: safeArea,
                                             place: .fullScreen(picture: picture, phone: isPhone, held: isNoVNC,
-                                                               strip: stripShown ? layout.strip : nil))
+                                                               strip: stripShown ? layout.strip : nil, floor: floor))
     }
 
     /// Sideways on a phone, the strip; upright, the header. Follows the

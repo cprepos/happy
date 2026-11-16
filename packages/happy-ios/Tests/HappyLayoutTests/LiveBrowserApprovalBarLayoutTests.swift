@@ -70,6 +70,85 @@ final class LiveBrowserApprovalBarLayoutTests: XCTestCase {
         }
     }
 
+    // Held, the native viewer's bar (Keyboard, Paste, Copy, Trackpad,
+    // Right click, More) is at the bottom: the bar stands 12 over its top.
+
+    func testHeldOverTheViewersBarOnAPhoneUprightItStandsAboveIt() {
+        let page = LiveBrowserFullScreenLayout(size: size, safeArea: safe, top: 116, phone: true, aspect: nil)
+        let toolbar = rect(0, 791, 402, 49)
+        let bar = Bar(size: size, safeArea: safe, place: .fullScreen(picture: page.content, phone: true, held: true, strip: nil, floor: toolbar.minY))
+        XCTAssertEqual(bar.mode, .overlay)
+        let frame = bar.frame(height: 60)
+        assertFrame(frame, rect(12, 719, 378, 60))
+        XCTAssertEqual(frame.maxY, toolbar.minY - Bar.Metrics.margin)
+        XCTAssertFalse(frame.intersects(toolbar))
+        XCTAssertFalse(bar.frame(height: 400).intersects(toolbar), "a tall bar is held, never over it")
+    }
+
+    func testTheKeyboardUpItRisesWithTheViewersBar() {
+        let page = LiveBrowserFullScreenLayout(size: size, safeArea: safe, top: 116, phone: true, aspect: nil)
+        // The bar over the key row (44) over the keyboard (336).
+        let toolbar = rect(0, 445, 402, 49), keys = rect(0, 494, 402, 44)
+        let bar = Bar(size: size, safeArea: safe, place: .fullScreen(picture: page.content, phone: true, held: true, strip: nil, floor: toolbar.minY))
+        assertFrame(bar.frame(height: 60), rect(12, 373, 378, 60))
+        XCTAssertEqual(bar.maxHeight, Bar.Metrics.overlayMaxHeight)
+        for height in [60, 400] as [CGFloat] {
+            XCTAssertFalse(bar.frame(height: height).intersects(toolbar))
+            XCTAssertFalse(bar.frame(height: height).intersects(keys))
+        }
+        // Little room left: held to it, under the safe area's top.
+        let high = Bar(size: size, safeArea: safe, place: .fullScreen(picture: page.content, phone: true, held: true, strip: nil, floor: 150))
+        XCTAssertEqual(high.maxHeight, 64)
+        assertFrame(high.frame(height: 400), rect(12, 74, 378, 64))
+    }
+
+    func testSidewaysHeldItStandsAboveTheViewersBarClearOfTheStrip() throws {
+        let sideways = CGSize(width: 874, height: 402)
+        let insets = LayoutInsets(top: 0, left: 62, bottom: 21, right: 62)
+        let page = LiveBrowserFullScreenLayout(size: sideways, safeArea: insets, top: 0, phone: true, aspect: nil)
+        let strip = try XCTUnwrap(page.strip)
+        let toolbar = rect(62, 337, 698, 44)
+        let bar = Bar(size: sideways, safeArea: insets, place: .fullScreen(picture: page.content, phone: true, held: true, strip: strip, floor: toolbar.minY))
+        let frame = bar.frame(height: 60)
+        assertFrame(frame, rect(151, 265, 520, 60))
+        XCTAssertFalse(frame.intersects(toolbar))
+        XCTAssertFalse(frame.intersects(strip))
+    }
+
+    func testOnAnIPadHeldItStandsAboveTheViewersBar() {
+        for size in [CGSize(width: 834, height: 1194), CGSize(width: 1194, height: 834)] {
+            let insets = LayoutInsets(top: 24, bottom: 20)
+            let toolbar = rect(0, size.height - 20 - 50, size.width, 50)
+            let bar = Bar(size: size, safeArea: insets, place: .fullScreen(picture: CGRect(origin: .zero, size: size), phone: false, held: true, strip: nil, floor: toolbar.minY))
+            let frame = bar.frame(height: 60)
+            assertFrame(frame, rect((size.width - 520) / 2, size.height - 20 - 50 - 12 - 60, 520, 60))
+            XCTAssertFalse(frame.intersects(toolbar))
+        }
+    }
+
+    func testAFloorUnderTheSafeAreasBottomChangesNothing() {
+        let page = LiveBrowserFullScreenLayout(size: size, safeArea: safe, top: 116, phone: true, aspect: nil)
+        let bar = Bar(size: size, safeArea: safe, place: .fullScreen(picture: page.content, phone: true, held: true, strip: nil, floor: 860))
+        XCTAssertEqual(bar, Bar(size: size, safeArea: safe, place: .fullScreen(picture: page.content, phone: true, held: true, strip: nil)))
+    }
+
+    func testNoVNCsPageKeepsItsKeyboardButtonsReserveClear() throws {
+        // An iPad: the page is the whole screen.
+        let iPad = CGSize(width: 834, height: 1194), insets = LayoutInsets(top: 24, bottom: 20)
+        let whole = CGRect(origin: .zero, size: iPad)
+        let floor = try XCTUnwrap(Bar.noVNCFloor(size: iPad, safeArea: insets, page: whole))
+        XCTAssertEqual(floor, 1194 - 20 - Bar.Metrics.noVNCReserve)
+        let bar = Bar(size: iPad, safeArea: insets, place: .fullScreen(picture: whole, phone: false, held: true, strip: nil, floor: floor))
+        assertFrame(bar.frame(height: 60), rect(157, 1046, 520, 60))
+        // A sideways phone's page reaches the bottom too.
+        let sideways = CGSize(width: 874, height: 402), wide = LayoutInsets(top: 0, left: 62, bottom: 21, right: 62)
+        let side = LiveBrowserFullScreenLayout(size: sideways, safeArea: wide, top: 0, phone: true, aspect: nil)
+        XCTAssertEqual(Bar.noVNCFloor(size: sideways, safeArea: wide, page: side.content), 325)
+        // A phone upright: the page is the picture's height, the bottom clear.
+        let upright = LiveBrowserFullScreenLayout(size: size, safeArea: safe, top: 116, phone: true, aspect: nil)
+        XCTAssertNil(Bar.noVNCFloor(size: size, safeArea: safe, page: upright.content))
+    }
+
     func testInTheChatItStandsOnTheStatusLineAsWideAsTheCard() {
         let card = rect(8, 776, 386, 56)
         let bar = Bar(size: size, safeArea: safe, place: .chat(card: card, anchor: 756))
