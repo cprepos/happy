@@ -54,8 +54,9 @@ header { position: sticky; top: 0; z-index: 1; width: 100%; background: var(--su
   background: var(--need-bg); color: var(--need-fg); overflow-wrap: anywhere; }
 #approval { margin: 12px var(--gutter-r) 0 var(--gutter-l); padding: 12px; border-radius: 10px;
   background: var(--need-bg); color: var(--need-fg); border: 1px solid var(--need-fg); overflow-wrap: anywhere; }
-#approval h2 { margin: 0 0 4px; font-size: 16px; }
+#approval h2 { margin: 0 0 6px; font-size: 17px; line-height: 1.3; }
 #approval p { margin: 0 0 6px; }
+#approval-label { margin: 0 0 2px; font-size: 12px; opacity: .8; }
 #approval ul { margin: 0 0 10px; padding-left: 18px; }
 #approval-code-box { margin: 0 0 10px; }
 #approval-code { margin: 6px 0 0; max-height: 40vh; overflow: auto; padding: 8px; border-radius: 6px;
@@ -196,7 +197,11 @@ const SCRIPT = `
     if (!a) { shownApproval = null; return; }
     if (shownApproval === a.id) return;
     shownApproval = a.id;
-    $('approval-summary').textContent = a.summary || 'The agent wants to do something that needs your approval.';
+    // The agent's own words lead, under a small label saying they are the agent's; without
+    // them, the bridge's generic summary.
+    const said = typeof a.reason === 'string' && a.reason ? a.reason : '';
+    $('approval-label').hidden = !said;
+    $('approval-title').textContent = said || a.summary || 'The agent wants to do something that needs your approval.';
     const list = $('approval-details');
     list.textContent = '';
     for (const d of (Array.isArray(a.details) ? a.details : [])) {
@@ -458,8 +463,8 @@ export function renderPage({ id, state, takeoverUrl, nonce, frameWidth = 1920, f
   <ul id="help-pop" hidden>${HELP.map(([name, detail]) => `<li><b>${esc(name)}</b>${esc(detail)}</li>`).join('')}</ul>
 </div>
 <section id="approval" role="alertdialog" aria-labelledby="approval-title" hidden>
+  <p id="approval-label" hidden>The agent says it will:</p>
   <h2 id="approval-title">Allow this browser action?</h2>
-  <p id="approval-summary"></p>
   <ul id="approval-details"></ul>
   <details id="approval-code-box" hidden><summary>Code</summary><pre id="approval-code"></pre></details>
   <div class="row">
