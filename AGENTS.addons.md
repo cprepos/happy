@@ -15,6 +15,21 @@ the `main` a release must match is **`fork/main`**: read `origin/main` as
 `fork/main` wherever the release skill says it. The Expo preflight script that
 used to enforce this went with the Expo app; nothing checks it for you now.
 
+## iOS Device Builds Go Through `make`
+
+Any iOS build that will be signed or installed on a phone or iPad goes only
+through `make -C packages/happy-ios ios-build-device` (or `ios-build-ipad-mac`),
+which applies the device patch: our team, Preview bundle id
+`org.girthbass.native`, empty entitlements. Never hand-roll one: no ad-hoc
+scripts, no rsync of unpatched source into `~/happy-fast/trees/device-*`, no
+running `bin/mac/build-device.sh` directly.
+
+Why: a build with upstream's `com.slopus.happy.preview`, signed with our app
+id, installs as a second app sharing our keychain group; opening it runs the
+fresh-install wipe and deletes the computer pairings. `sign.sh` refuses such
+builds (exit 92) and `build-device.sh` fails Preview with exit 4 -- those are a
+backstop, not permission to build around `make`.
+
 ## Pushes Go To `fork`, Never `origin`
 
 This repo has two push remotes:
