@@ -139,6 +139,15 @@ ssh prep-air "osascript -e 'tell application \"Terminal\" to do script \"/bin/ba
 # poll: grep "SIGN EXIT" ~/happy-phone-build/$TS/logs/sign.log  → want "SIGN EXIT 0"
 ```
 sign.sh refuses to run if `signed/` exists (exit 91). Use a new TS rather than deleting it.
+sign.sh also refuses an app whose bundle id is not `org.girthbass.native`, or
+whose extensions are not `org.girthbass.native.*` (exit 92, with the id it
+found). Such an app was built from a tree without the device patch, usually
+by a script that skipped `make ios-build-device`; installed, it shows up as a
+second "Happy (preview)" app whose first launch wipes the shared keychain
+group and with it the phone's computer pairings. Rebuild through
+`make ios-build-device PHONE_TS=<new ts>` and sign that new TS. Never edit the
+plist by hand. `build-device.sh` stops a Preview build with the wrong id too
+(exit 4), before it copies anything to `~/happy-phone-build`.
 
 ### 5a. Direct install (device on the LAN/USB, unlocked)
 ```bash
