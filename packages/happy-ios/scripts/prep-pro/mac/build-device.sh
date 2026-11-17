@@ -65,6 +65,23 @@ log "xcodebuild exit $rc in $((SECONDS - t0)) s"
 if (( rc != 0 )); then grep -E 'error:|BUILD FAILED' $L/compile.log | head -30; finish 3; fi
 
 APP=$DD/Build/Products/$CONFIG-iphoneos/Happy.app
+# remote.sh patches only the Preview config to our bundle id; Debug and
+# Release keep upstream's ids, so they are only logged. A Preview app with
+# another id came from an unpatched tree: never hand it to sign.sh.
+plist_id() { /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' $1/Info.plist 2>/dev/null; }
+got=$(plist_id $APP)
+log "bundle id $got"
+if [[ $CONFIG == Preview ]]; then
+  if [[ $got != org.girthbass.native ]]; then
+    log "bundle id is '$got', not org.girthbass.native: trees/$KIND is not patched"; finish 4
+  fi
+  for x in $APP/**/*.appex(N/); do
+    got=$(plist_id $x)
+    if [[ $got != org.girthbass.native.?* ]]; then
+      log "extension $x has bundle id '$got', not org.girthbass.native.*"; finish 4
+    fi
+  done
+fi
 if [[ -n $PHONE_TS ]]; then
   B=$OUT_ROOT/$PHONE_TS
   O=$B/dd/Build/Products/$CONFIG-iphoneos
