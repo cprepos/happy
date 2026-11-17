@@ -15,6 +15,16 @@ if [ -e signed ]; then echo "signed already exists"; echo "SIGN EXIT 91"; exit 9
 # prep-air gets a copy in unsigned/; on prep-pro, the build's own product.
 UNSIGNED=unsigned/Happy.app
 [ -d "$UNSIGNED" ] || UNSIGNED=dd/Build/Products/Preview-iphoneos/Happy.app
+# Only sign our own bundle id: a build from an unpatched tree comes out as
+# upstream's com.slopus.happy.preview, installs as a second app, and its
+# first launch wipes the keychain group it shares with ours.
+BUNDLE=org.girthbass.native
+GOT=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$UNSIGNED/Info.plist" 2>/dev/null)
+if [ "$GOT" != "$BUNDLE" ]; then echo "bundle id is '$GOT', not $BUNDLE: rebuild from the patched tree"; echo "SIGN EXIT 92"; exit 92; fi
+while IFS= read -r f; do
+  GOT=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$f/Info.plist" 2>/dev/null)
+  case "$GOT" in "$BUNDLE".?*) ;; *) echo "extension $f has bundle id '$GOT', not $BUNDLE.*"; echo "SIGN EXIT 92"; exit 92 ;; esac
+done < <(find "$UNSIGNED" -type d -name "*.appex")
 mkdir signed && ditto "$UNSIGNED" signed/Happy.app
 APP=signed/Happy.app
 cp "$PROFILE" "$APP/embedded.mobileprovision"
