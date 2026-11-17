@@ -569,10 +569,17 @@ public struct LiveBrowserChat: Equatable, Sendable, Decodable {
     public var link: LiveBrowserLink
     public var live: Bool
     public var state: LiveBrowserState
+    /// The browser the link shows now, and when it started (ms since
+    /// 1970): a new browser, or one replacing a dead or asleep one, starts
+    /// later. Nil from a bridge that doesn't say.
+    public var sessionId: String?
+    public var startedAt: Double?
 
-    public init(link: LiveBrowserLink, live: Bool, state: LiveBrowserState) { self.link = link; self.live = live; self.state = state }
+    public init(link: LiveBrowserLink, live: Bool, state: LiveBrowserState, sessionId: String? = nil, startedAt: Double? = nil) {
+        self.link = link; self.live = live; self.state = state; self.sessionId = sessionId; self.startedAt = startedAt
+    }
 
-    private enum CodingKeys: String, CodingKey { case id, live }
+    private enum CodingKeys: String, CodingKey { case id, live, sessionId, startedAt }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -583,11 +590,40 @@ public struct LiveBrowserChat: Equatable, Sendable, Decodable {
         self.link = link
         live = try container.decodeIfPresent(Bool.self, forKey: .live) ?? false
         state = try LiveBrowserState(from: decoder)
+        sessionId = try? container.decodeIfPresent(String.self, forKey: .sessionId)
+        startedAt = try? container.decodeIfPresent(Double.self, forKey: .startedAt)
+    }
+
+    /// Which browser this is, for the player to open once for each: its
+    /// session and start. Nil when the bridge says neither.
+    public var browserStart: LiveBrowserStart? {
+        guard sessionId != nil || startedAt != nil else { return nil }
+        return LiveBrowserStart(sessionId: sessionId, startedAt: startedAt)
     }
 
     /// A browser actually runs for the chat: the bridge's `live`, and
     /// nothing else. Only this shows the red line.
     public var running: Bool { live }
+}
+
+/// One browser of a chat's link: its session and when it started.
+public struct LiveBrowserStart: Equatable, Sendable {
+    public var sessionId: String?
+    public var startedAt: Double?
+
+    public init(sessionId: String?, startedAt: Double?) { self.sessionId = sessionId; self.startedAt = startedAt }
+
+    /// Another browser than `shown`, started after it: a new session, or
+    /// a later start (a restart in the same link). Never one that started
+    /// before the one shown.
+    public func isNewer(than shown: LiveBrowserStart?) -> Bool {
+        guard let shown else { return true }
+        if let startedAt, let before = shown.startedAt {
+            if startedAt != before { return startedAt > before }
+            return sessionId != shown.sessionId
+        }
+        return sessionId != shown.sessionId || startedAt != shown.startedAt
+    }
 }
 
 extension ChatSnapshot {

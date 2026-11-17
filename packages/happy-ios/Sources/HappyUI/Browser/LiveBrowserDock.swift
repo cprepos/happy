@@ -217,6 +217,27 @@ final class LiveBrowserDock: NSObject {
         follow()
         reconsiderFeed()
         refresh()
+        openForNewBrowser()
+    }
+
+    /// The browser each chat's player last opened for on its own, by chat
+    /// key, for this run of the app only (never stored): each new browser
+    /// opens it once, and one the person closed stays closed.
+    private static var shownStarts: [String: LiveBrowserStart] = [:]
+
+    /// Tests: every chat as if no browser had been shown.
+    static func forgetShownBrowsers() { shownStarts = [:] }
+
+    /// A browser started for the chat (its first, a restart in the same
+    /// link, one started while the chat was away) that this chat hasn't
+    /// shown: the player opens, once for it, while the chat shows.
+    private func openForNewBrowser() {
+        guard isOnScreen, host?.viewIfLoaded != nil,
+              let chat = chatWatch?.answer.chat, chat.running, chat.link == feed?.link,
+              let start = chat.browserStart, start.isNewer(than: Self.shownStarts[chatKey]) else { return }
+        Self.shownStarts[chatKey] = start
+        LiveBrowserLog.info("live browser: a new browser for the chat; opening the player")
+        openPlayer()
     }
 
     /// The bridge's answers in a row that disagreed with the line.
@@ -327,6 +348,8 @@ final class LiveBrowserDock: NSObject {
         chatWatch?.setVisible(onScreen)
         reconsiderFeed()
         if let player { feed?.set(player, visible: onScreen) }
+        // Back on screen: a browser that started while the chat was away.
+        if onScreen { openForNewBrowser() }
     }
 
     /// What rides the keyboard with the composer: the small player, at a

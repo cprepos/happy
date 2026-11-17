@@ -52,6 +52,24 @@ final class LiveBrowserChatTests: XCTestCase {
         XCTAssertThrowsError(try JSONDecoder().decode(LiveBrowserChat.self, from: Data(#"{"id":"nope","live":true,"status":"watching"}"#.utf8)))
     }
 
+    func testTheLookupSaysWhichBrowserRunsAndWhenItStarted() throws {
+        let body = #"{"id":"\#(Self.a)","sessionId":"a85b5d559d27","startedAt":1794873331935,"live":true,"status":"watching","pod":"running"}"#
+        let chat = try JSONDecoder().decode(LiveBrowserChat.self, from: Data(body.utf8))
+        XCTAssertEqual(chat.sessionId, "a85b5d559d27")
+        XCTAssertEqual(chat.startedAt, 1_794_873_331_935)
+        let start = try XCTUnwrap(chat.browserStart)
+        XCTAssertTrue(start.isNewer(than: nil), "nothing shown yet")
+        XCTAssertFalse(start.isNewer(than: start), "the browser already shown")
+        let restarted = LiveBrowserStart(sessionId: "b96c6e660e38", startedAt: 1_794_873_400_000)
+        XCTAssertTrue(restarted.isNewer(than: start))
+        XCTAssertFalse(start.isNewer(than: restarted), "never one that started before the one shown")
+        XCTAssertTrue(LiveBrowserStart(sessionId: "s2", startedAt: nil).isNewer(than: LiveBrowserStart(sessionId: "s1", startedAt: nil)))
+
+        // An older bridge says neither: no browser to open the player for.
+        let older = try JSONDecoder().decode(LiveBrowserChat.self, from: Data(#"{"id":"\#(Self.a)","live":true,"status":"watching"}"#.utf8))
+        XCTAssertNil(older.browserStart)
+    }
+
     func testThePodField() throws {
         func state(_ json: String) throws -> LiveBrowserState { try JSONDecoder().decode(LiveBrowserState.self, from: Data(json.utf8)) }
         XCTAssertNil(try state(#"{"status":"watching"}"#).pod, "a bridge without pods")

@@ -21,6 +21,9 @@ extension BrowserDaemon {
         var livePod: String?
         /// The link `/live/chat/<key>` answers with; nil is 404 `no_link`.
         var chatLink: String?
+        /// The browser `/live/chat/<key>` says the link shows (its
+        /// `sessionId` and `startedAt`); nil says neither, as an older bridge.
+        var chatBrowser: (session: String, startedAt: Double)?
         /// `/take`s answered 202 (waking) before the 200.
         var wakingTakes = 0
         /// `frame.jpg` reads that are never answered, as a stalled tunnel's.
@@ -102,7 +105,8 @@ extension BrowserDaemon {
         if head.line.contains(" /live/chat/") {
             guard let chatLink else { return reply("404 Not Found", "application/json", Data(#"{"error":"no_link"}"#.utf8)) }
             let live = liveStatus != "done" && (livePod == nil || livePod == "running" || livePod == "starting")
-            return reply("200 OK", "application/json", Data(#"{"id":"\#(chatLink)","live":\#(live),"status":"\#(liveStatus)","url":"https://example.com/login","title":"Log in to Example"\#(pod)}"#.utf8))
+            let browser = pluginState.chatBrowser.map { #","sessionId":"\#($0.session)","startedAt":\#(Int($0.startedAt))"# } ?? ""
+            return reply("200 OK", "application/json", Data(#"{"id":"\#(chatLink)","live":\#(live),"status":"\#(liveStatus)","url":"https://example.com/login","title":"Log in to Example"\#(pod)\#(browser)}"#.utf8))
         }
         if head.line.contains("/live/0e0e0e0e") { return reply("410 Gone", "application/json", Data(#"{"error":"expired"}"#.utf8)) }
         if head.line.hasPrefix("POST ") && head.line.contains("/take ") && wakingTakes > 0 {
@@ -184,6 +188,7 @@ extension BrowserDaemon {
     }
     func setLivePod(_ pod: String?) { livePod = pod }
     func setChatLink(_ id: String?) { chatLink = id }
+    func setChatBrowser(_ session: String?, startedAt: Double = 0) { pluginState.chatBrowser = session.map { ($0, startedAt) } }
     func setWakingTakes(_ count: Int) { wakingTakes = count }
     func setStalledFrames(_ count: Int) { stalledFrames = count }
     func setStateMissing(_ missing: Bool) { pluginState.stateMissing = missing }

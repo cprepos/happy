@@ -386,23 +386,94 @@ final class HostedLiveBrowserTests: XCTestCase {
         try await until { host.dock.indicator.isHidden }
     }
 
-    func testOnlyNeedsYouOpensThePlayer() async throws {
-        let daemon = BrowserDaemon()
+    /// A host whose chat finds its browser by its key, as a Happy CLI
+    /// chat does, with the bridge saying which browser runs.
+    private func lookingUp(_ daemon: BrowserDaemon, session: String, startedAt: Double) async throws -> (Host, UIWindow) {
         await daemon.setLiveStatus("watching")
+        await daemon.setLivePod("running")
+        await daemon.setChatLink(id)
+        await daemon.setChatBrowser(session, startedAt: startedAt)
         let (host, window) = try await makeHost(daemon)
-        defer { window.isHidden = true; host.dock.update(link: nil) }
+        host.dock.lookUp(key: LiveBrowserLink.chatKey(happySession: "cmw9vuo5n1yr5mrdzgerozoax"))
+        return (host, window)
+    }
+
+    func testANewBrowserOpensThePlayer() async throws {
+        let daemon = BrowserDaemon()
+        let (host, window) = try await lookingUp(daemon, session: "a85b5d559d27", startedAt: 1_794_873_331_935)
+        defer { window.isHidden = true; host.dock.lookUp(key: nil) }
         let dock = host.dock!
-        dock.update(link: LiveBrowserLink(id: id))
-        try await until { dock.indicator.text == Strings.LiveBrowser.indicator(Strings.LiveBrowser.clickToWatch) }
-        try await Task.sleep(for: .milliseconds(600))
-        XCTAssertNil(dock.player, "watching: the line only")
-        await daemon.setLiveStatus("takeover")
         try await until { dock.player != nil }
-        // Closed while it still needs the person: it stays closed.
+        XCTAssertEqual(dock.feed?.link.id, id)
+        XCTAssertEqual(dock.indicator.text, Strings.LiveBrowser.indicator(Strings.LiveBrowser.watching), "the player shows: Watching")
+
+        // A bridge that doesn't say which browser runs opens nothing: the line only.
+        let older = BrowserDaemon()
+        await older.setLiveStatus("watching")
+        await older.setLivePod("running")
+        await older.setChatLink(id)
+        let (other, otherWindow) = try await makeHost(older)
+        defer { otherWindow.isHidden = true; other.dock.lookUp(key: nil) }
+        other.dock.lookUp(key: LiveBrowserLink.chatKey(happySession: "cmw9vuo5n1yr5mrdzgerozoax"))
+        try await until { other.dock.indicator.text == Strings.LiveBrowser.indicator(Strings.LiveBrowser.clickToWatch) }
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertNil(other.dock.player)
+
+        // "Needs you" still opens it on its own.
+        await older.setLiveStatus("takeover")
+        try await until { other.dock.player != nil }
+    }
+
+    func testAClosedPlayerStaysClosedForTheSameBrowser() async throws {
+        let daemon = BrowserDaemon()
+        let (host, window) = try await lookingUp(daemon, session: "a85b5d559d27", startedAt: 1_794_873_331_935)
+        defer { window.isHidden = true; host.dock.lookUp(key: nil) }
+        let dock = host.dock!
+        try await until { dock.player != nil }
         dock.closePlayer(animated: false)
-        try await Task.sleep(for: .milliseconds(2500))
+        // Asked again (the lookup answers on), and the chat leaving and coming
+        // back: the same browser keeps it closed.
+        dock.chatWatch?.checkNow()
+        try await Task.sleep(for: .milliseconds(1500))
         XCTAssertNil(dock.player)
-        XCTAssertFalse(dock.indicator.isHidden)
+        dock.setOnScreen(false)
+        dock.setOnScreen(true)
+        dock.chatWatch?.checkNow()
+        try await Task.sleep(for: .milliseconds(1500))
+        XCTAssertNil(dock.player, "closed for this browser: it stays closed")
+        XCTAssertFalse(dock.indicator.isHidden, "the line stays")
+
+        // A new screen for the same chat (the chat left and opened again) remembers it too.
+        let (again, againWindow) = try await makeHost(daemon, chat: dock.chatKey)
+        defer { againWindow.isHidden = true; again.dock.lookUp(key: nil) }
+        again.dock.lookUp(key: LiveBrowserLink.chatKey(happySession: "cmw9vuo5n1yr5mrdzgerozoax"))
+        try await until { again.dock.indicator.text == Strings.LiveBrowser.indicator(Strings.LiveBrowser.clickToWatch) }
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertNil(again.dock.player)
+    }
+
+    func testARestartOpensThePlayerAgain() async throws {
+        let daemon = BrowserDaemon()
+        let (host, window) = try await lookingUp(daemon, session: "a85b5d559d27", startedAt: 1_794_873_331_935)
+        defer { window.isHidden = true; host.dock.lookUp(key: nil) }
+        let dock = host.dock!
+        try await until { dock.player != nil }
+        dock.closePlayer(animated: false)
+
+        // The browser restarts in the same link: a new session, a later start.
+        await daemon.setChatBrowser("b96c6e660e38", startedAt: 1_794_873_400_000)
+        dock.chatWatch?.checkNow()
+        try await until { dock.player != nil }
+        XCTAssertEqual(dock.feed?.link.id, id, "the same link")
+
+        // One started while the chat was away opens it when the chat comes back.
+        dock.closePlayer(animated: false)
+        dock.setOnScreen(false)
+        await daemon.setChatBrowser("c07d7f771f49", startedAt: 1_794_873_500_000)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(dock.player, "nothing opens while the chat doesn't show")
+        dock.setOnScreen(true)
+        try await until { dock.player != nil }
     }
 
     func testAnExpiredLinkHasNoLine() async throws {
