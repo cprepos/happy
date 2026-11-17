@@ -97,7 +97,7 @@ final class HostedSessionLiveBrowserTests: XCTestCase {
     /// A session whose agent opened the browser and shared its live view.
     /// With `computer`, prep-pro is paired, answering as `computer` does,
     /// and the session runs in `path` on it.
-    private func chat(computer: BrowserDaemon? = nil, flavor: String = "codex", path: String? = nil) async throws -> (LegacyChatViewController, UIWindow) {
+    private func chat(computer: BrowserDaemon? = nil, flavor: String = "codex", path: String? = nil, pairLater: Bool = false) async throws -> (LegacyChatViewController, UIWindow, AccountController) {
         let controller = AccountController(
             serverConfig: ServerConfig(storage: InMemoryKeyValueStore()), clientID: "ios/test",
             credentialStore: InMemoryCredentialStore(), storeDirectory: nil,
@@ -107,7 +107,7 @@ final class HostedSessionLiveBrowserTests: XCTestCase {
             transport: SessionBrowserOffline(), connector: SessionBrowserNoSocket()
         )
         try await controller.signIn(Credentials(token: "t", secret: Data(repeating: 13, count: 32)))
-        if computer != nil {
+        if computer != nil, !pairLater {
             await controller.agentConnections.setForeground(false)
             let pairing = try await controller.agentConnections.add(
                 JSONDecoder().decode(AgentConnectionCredentials.self, from: Data(#"{"address":"prep-pro-test","port":1,"deviceID":"\#(UUID().uuidString)","deviceToken":"token"}"#.utf8)),
@@ -131,7 +131,7 @@ final class HostedSessionLiveBrowserTests: XCTestCase {
         }
         window.layoutIfNeeded()
         try await until("the transcript") { chat.contentInstalled }
-        return (chat, window)
+        return (chat, window, controller)
     }
 
     private func screenshot(_ window: UIWindow, name: String) throws {
@@ -161,7 +161,7 @@ final class HostedSessionLiveBrowserTests: XCTestCase {
     /// The browser tool's row is a "Browser" row, and carries the live
     /// view's chip under it.
     func testTheToolRowThatLinksTheBrowserCarriesItsChip() async throws {
-        let (chat, window) = try await chat()
+        let (chat, window, _) = try await chat()
         try await until("the chip") { descendants(chat.view).contains { $0 is LiveBrowserChipView } }
         let chip = try XCTUnwrap(descendants(chat.view).compactMap { $0 as? LiveBrowserChipView }.first)
         XCTAssertEqual(chip.link?.id, linkId)
@@ -175,7 +175,7 @@ final class HostedSessionLiveBrowserTests: XCTestCase {
     /// right edge, outside the composer: with the keyboard down, up, and
     /// down again.
     func testTheRedLineStandsOnTheComposersCard() async throws {
-        let (chat, window) = try await chat()
+        let (chat, window, _) = try await chat()
         let dock = try XCTUnwrap(chat.liveBrowserDock)
         // The line stands only for a browser the bridge says is live: a
         // computer whose bridge answers so.
@@ -279,7 +279,7 @@ final class HostedSessionLiveBrowserTests: XCTestCase {
     func testASessionInHappyGoesThroughHappysWorkspace() async throws {
         for flavor in ["claude", "codex", "gemini", "opencode"] {
             let daemon = await prepPro()
-            let (chat, window) = try await chat(computer: daemon, flavor: flavor, path: "/Users/cprepos/happy/.dev/worktree/bright-bridge")
+            let (chat, window, _) = try await chat(computer: daemon, flavor: flavor, path: "/Users/cprepos/happy/.dev/worktree/bright-bridge")
             defer { window.isHidden = true }
             try await miniView(chat, daemon, through: "happyws")
             try await tapLink(chat, daemon, through: "happyws")
@@ -314,11 +314,54 @@ final class HostedSessionLiveBrowserTests: XCTestCase {
         }
     }
 
+    /// A Claude Code session started with the Happy CLI, opened before its
+    /// computer is paired (or before the paired computers are read at
+    /// launch): it asks nothing then, and once the computer is paired the
+    /// chat on screen routes again, and the bridge is asked for its
+    /// browser by the session's key with no new visit to the chat.
+    func testASessionOpenedBeforeItsComputerIsPairedAsksOnceItIs() async throws {
+        let daemon = await prepPro()
+        let (chat, window, controller) = try await chat(computer: daemon, flavor: "claude", path: "/Users/cprepos/happy", pairLater: true)
+        defer { window.isHidden = true }
+        let key = LiveBrowserLink.chatKey(happySession: sessionId)
+        let dock = try XCTUnwrap(chat.liveBrowserDock)
+        try await waitFor("routed with no computer") { dock.routing == nil && dock.routedEmpty }
+        try await Task.sleep(for: .milliseconds(500))
+        let early = await daemon.requests.contains { $0.hasPrefix("GET /live/chat/") }
+        XCTAssertFalse(early, "no computer: nothing is asked")
+
+        await controller.agentConnections.setForeground(false)
+        let pairing = try await controller.agentConnections.add(
+            JSONDecoder().decode(AgentConnectionCredentials.self, from: Data(#"{"address":"prep-pro-test","port":1,"deviceID":"\#(UUID().uuidString)","deviceToken":"token"}"#.utf8)),
+            name: "prep-pro"
+        )
+        addTeardownBlock { @MainActor in Session.forget(pairing.id) }
+        try await waitFor("the lookup once paired") { await daemon.requests.contains { $0.hasPrefix("GET /live/chat/\(key)") } }
+        try await miniView(chat, daemon, through: "happyws")
+    }
+
+    /// The same chat's live link, tapped while no computer is paired: the
+    /// browser opens on its error page and says why, in words.
+    func testALinkTappedWithNoPairedComputerSaysWhy() async throws {
+        let (chat, window, _) = try await chat(flavor: "claude", path: "/Users/cprepos/happy")
+        defer { window.isHidden = true }
+        let list = try XCTUnwrap(descendants(chat.view).compactMap { $0 as? ChatListView }.first)
+        chat.chatList(list, openLink: "\(LiveBrowserLink.localOrigin)/live/\(linkId)")
+        let navigation = try XCTUnwrap(chat.navigationController)
+        try await waitFor("the browser") { navigation.topViewController is BrowserViewController }
+        let browser = try XCTUnwrap(navigation.topViewController as? BrowserViewController)
+        try await waitFor("the error page") { !browser.failureView.isHidden && !browser.failureView.shownMessage.isEmpty }
+        let words = Strings.Browser.failure(.unavailable, computer: "", host: nil)
+        XCTAssertEqual(browser.failureView.shownTitle, words.title)
+        XCTAssertEqual(browser.failureView.shownMessage, words.message)
+        XCTAssertTrue(words.message.contains("Connect the computer"), words.message)
+    }
+
     /// A session in ~/Downloads is under no project but Home's folder: its
     /// mini view and its links go through `Home`.
     func testASessionInDownloadsGoesThroughHome() async throws {
         let daemon = await prepPro()
-        let (chat, window) = try await chat(computer: daemon, path: "/Users/cprepos/Downloads")
+        let (chat, window, _) = try await chat(computer: daemon, path: "/Users/cprepos/Downloads")
         defer { window.isHidden = true }
         try await miniView(chat, daemon, through: "homews")
         try await tapLink(chat, daemon, through: "homews")

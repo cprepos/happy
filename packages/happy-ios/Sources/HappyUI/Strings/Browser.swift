@@ -29,7 +29,7 @@ extension Strings {
             case .computerUnreachable:
                 return ("Can’t Reach \(computer)", "Pages open through \(computer), and it isn’t answering. Make sure it’s awake and Happy is running there.")
             case .unavailable:
-                return ("Can’t Open This Page", "Pages open through a computer running Happy Agent, and there’s no connection to open this one through.")
+                return ("Can’t Open This Page", "Pages open through a computer running Happy Agent that’s connected to this device, and none is connected for this chat. Connect the computer it runs on (scan the code Happy Agent shows), then try again.")
             case .liveUnavailable:
                 return ("This Page’s Computer Isn’t Available", "This page runs on the computer where the agent that shared it works. That computer isn’t available right now, or the page is no longer shared.")
             case .computeDisconnected:

@@ -125,14 +125,24 @@ extension LiveBrowserDock {
             let id: String?
             switch route {
             case .computer(let computer, _): id = computer
-            case .unavailable: id = nil
+            case .unavailable:
+                // No paired computer: nothing is asked until one is paired
+                // (the chat routes again when the paired computers change).
+                LiveBrowserLog.info("live browser: no paired computer for the chat's machine; not asking")
+                return nil
             case .ask(let choices, _):
                 guard let ask else { return nil }
                 id = await withCheckedContinuation { (done: CheckedContinuation<String?, Never>) in
                     ask(choices, record) { done.resume(returning: $0) }
                 }
+                if id == nil { LiveBrowserLog.info("live browser: no computer picked for the chat's machine; not asking") }
             }
-            return id.flatMap { Session.session(for: $0, context: context)?.client }
+            guard let id else { return nil }
+            guard let client = Session.session(for: id, context: context)?.client else {
+                LiveBrowserLog.info("live browser: the chat's computer has no connection yet; not asking")
+                return nil
+            }
+            return client
         }
     }
 
@@ -166,7 +176,7 @@ extension LiveBrowserDock {
         case .agent(_, let happySession): happySession == nil ? "agent" : "agent with its Happy session"
         }
         Logger(subsystem: "org.girthbass.native", category: "live-browser")
-            .info("live browser: \(kind, privacy: .public) asks by \(keys.count, privacy: .public) key(s)")
+            .notice("live browser: \(kind, privacy: .public) asks by \(keys.count, privacy: .public) key(s)")
 #endif
     }
 }

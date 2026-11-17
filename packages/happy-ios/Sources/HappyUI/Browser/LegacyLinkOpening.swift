@@ -24,6 +24,8 @@ extension UIViewController {
         case .computer(let id, let workspace):
             presentBrowser(browser(id, workspace))
         case .unavailable:
+            // No paired computer: the browser says so, and asks nothing.
+            LiveBrowserLog.info("link: no paired computer for the chat's machine; showing unavailable")
             presentBrowser(BrowserViewController(url: url, session: nil))
         case .ask(let choices, let workspace):
             askLegacyComputer(choices, session: record, machine: machine, settings: settings) { [weak self] id in

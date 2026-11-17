@@ -86,6 +86,10 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     }()
     /// The transcript's newest live link.
     private var liveTranscriptLink: LiveBrowserLink?
+    /// The paired computers, watched while the chat is shown: a chat routed
+    /// before they were read at launch, or before one was paired, found no
+    /// computer and asked nothing; it routes again when they change.
+    private var liveComputersObservation: AccountsObservation?
     /// The composer stays hidden until its draft is restored, its taps
     /// caught meanwhile (`ChatComposerReveal`).
     private lazy var composerReveal = ChatComposerReveal(composer: composer)
@@ -537,6 +541,12 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         appeared = true
         liveDock.setOnScreen(true)
         routeLiveBrowser()
+        if liveComputersObservation == nil {
+            liveComputersObservation = context.account.observeAccounts { [weak self] _ in
+                guard let self, self.appeared else { return }
+                self.routeLiveBrowser()
+            }
+        }
         startConstruction()
         // An empty compose has no transcript to stage: built now, its
         // composer can take the keyboard while the push still runs.
@@ -599,6 +609,8 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
         appeared = false
         account.chatDisappeared(chatId)
         liveDock.setOnScreen(false)
+        liveComputersObservation?.cancel()
+        liveComputersObservation = nil
         // Closed, not covered: control taken here goes back.
         if isMovingFromParent || isBeingDismissed || navigationController?.isBeingDismissed == true { liveDock.hostClosed() }
         if let keyboard = ultraKeyboard, keyboard.isActive {
