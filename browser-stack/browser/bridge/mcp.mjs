@@ -124,6 +124,14 @@ export const READ_ONLY_TOOLS = new Set([
     'browser_get_session', 'browser_list_sessions', 'browser_wait_for_selector', 'browser_list_downloads',
     'browser_read_download', 'browser_live_link', 'browser_create_session', 'browser_list_auth_profiles', 'browser_list_secrets',
 ]);
+// Tools that only report on the chat's browser (a subset of READ_ONLY_TOOLS). They never start or
+// restart one: with no browser running (never started, asleep, or ended by the user) they are
+// answered from the link's state, so asking after the user's End does not bring it back. The
+// other read-only tools (observe, screenshot, create_session, live_link, ...) need a page and
+// still start the chat's browser.
+export const STATE_TOOLS = new Set([
+    'browser_list_sessions', 'browser_get_session', 'browser_list_tabs', 'browser_list_downloads', 'browser_list_auth_profiles',
+]);
 const RECOVERY_WHY = { session_ended: 'its session ended', pod_crashed: 'it stopped answering', pod_asleep: 'it was asleep', ended: 'it was ended' };
 export function recoveredNote(via) {
     const r = via.recovered;
@@ -131,6 +139,13 @@ export function recoveredNote(via) {
         + `this chat's browser is now session ${via.session_id}, signed in with its saved login and `
         + (r.reason === 'ended' ? 'on a new page (the user ended the last one).' : 'reopened at its last page if it had one.')
         + (via.url ? ` Live view: ${via.url}` : '');
+}
+// A state tool's answer when the chat has no browser running. st: the link's /api/state, or null.
+export function noBrowserAnswer(name, st) {
+    const ended = st?.status === 'done' && st?.reason === 'user_ended';
+    const note = `No browser is running for this chat${ended ? ' (the user ended it)' : ''}. Nothing was started; `
+        + 'browser_observe or browser_create_session starts one when you need it.';
+    return { running: false, ...(ended ? { ended_by_user: true } : {}), ...(name === 'browser_list_sessions' ? { sessions: [] } : {}), note };
 }
 export const RECOVERED_REFUSED = 'Nothing was done: observe the page again (browser_observe) before acting, since element ids from before no longer apply.';
 export const SHARED_DOWN = 'The shared browser is down (auto-browser is not answering). It is not restarted automatically; try again shortly or ask the user to check the browser stack.';
@@ -430,7 +445,8 @@ export function createChatRouter({ bridge, makeUpstream, chat = null, newKey = (
         get legacy() { return legacyAt !== null && now() - legacyAt < recheckMs; },
         // This call's pod: {key, session_id, mcp_url, api_url, link_id, upstream}, or null with pods off.
         // callChat: {key, source} the MCP client named for this one call (a daemon serving many chats).
-        async route(name, args, signal, { verify = false, check = false, chat: callChat = null } = {}) {
+        // peek: only a browser already running for the chat; {key, none: true} when there is none.
+        async route(name, args, signal, { verify = false, check = false, peek = false, chat: callChat = null } = {}) {
             if (legacyAt !== null && now() - legacyAt < recheckMs) return null;
             if (callChat?.unknown) throw new Error(NO_CHAT);
             const c = callChat ?? chat;
@@ -441,7 +457,14 @@ export function createChatRouter({ bridge, makeUpstream, chat = null, newKey = (
                 // _meta (metaCallChat), never one a daemon's journal or the arguments name.
                 const fork = c && (c === chat || c.fromMeta === true) && c.forkedFrom ? { forked_from: c.forkedFrom } : {};
                 const flags = { ...(verify ? { verify: true } : {}), ...(check ? { check: true } : {}) };
-                if (key) d = await bridge('/api/pod', { chat_key: key, source: c?.source ?? 'session', ...fork, ...flags }, signal);
+                if (key && peek) {
+                    try {
+                        d = await bridge('/api/pod', { chat_key: key, peek: true }, signal);
+                    } catch (err) {
+                        if (err.status === 404 && err.code === 'no_browser') { legacyAt = null; known = true; return { key, none: true }; }
+                        throw err;
+                    }
+                } else if (key) d = await bridge('/api/pod', { chat_key: key, source: c?.source ?? 'session', ...fork, ...flags }, signal);
                 else {
                     // A session this process has not seen (another process made it, or before a restart).
                     d = await bridge('/api/pod', { session_id: args.session_id, ...flags }, signal);
@@ -564,12 +587,22 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
         if (!router) return { via: null, args };
         let via;
         try {
-            via = await router.route(name, args, signal, { chat: cc, check: name !== 'browser_close_session' });
+            via = STATE_TOOLS.has(name)
+                ? await router.route(name, args, signal, { chat: cc, peek: true })
+                : await router.route(name, args, signal, { chat: cc, check: name !== 'browser_close_session' });
         } catch (err) {
             if (!signal.aborted) result(id, toolResult(`Error: the browser for this chat is not available: ${err.message}`, true));
             return { done: true };
         }
         if (!via) return { via: null, args };
+        if (via.none) {
+            // No browser running for the chat: answered from its link's state, nothing started.
+            let st = null;
+            try { st = await bridge('/api/state', { chat_key: via.key }, signal); } catch {}
+            if (signal.aborted) return { done: true };
+            result(id, toolResult(noBrowserAnswer(name, st)));
+            return { done: true };
+        }
         if (name === 'browser_fork_session') { result(id, toolResult(ONE_BROWSER, true)); return { done: true }; }
         if (name === 'browser_close_session') {
             try {

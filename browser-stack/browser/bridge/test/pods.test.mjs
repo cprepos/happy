@@ -143,6 +143,47 @@ test('only the start of a chat\'s first browser is a new_session', async () => {
     assert.equal(woken.new_session, undefined, 'a woken browser reopens the chat\'s page; it is not new');
 });
 
+test('the link\'s startedAt marks a new browser: the first, one replacing a dead one, the first after End; not a running or woken one', async () => {
+    const h = harness();
+    const KEY = 'a'.repeat(32);
+    await h.mgr.ensure(KEY);
+    const link = h.store.findChat(KEY);
+    const first = link.startedAt;
+    assert.equal(first, h.now());
+    h.advance(3000);
+    await h.mgr.ensure(KEY, { check: true });
+    assert.equal(link.startedAt, first, 'a running browser keeps its startedAt');
+    // Replaced after its session died: a new browser.
+    h.advance(3000);
+    const cur = h.mgr.peek(KEY);
+    h.clients.get(cur.slot).dead.add(cur.session_id);
+    const r = await h.mgr.ensure(KEY, { check: true });
+    assert.ok(r.recovered);
+    assert.equal(link.startedAt, h.now());
+    const replaced = link.startedAt;
+    assert.ok(replaced > first);
+    // Woken by the app (no check): the same browser coming back, startedAt unchanged.
+    h.advance(3000);
+    await h.mgr.stopChat(KEY, 'slept');
+    await h.mgr.ensure(KEY);
+    assert.equal(link.startedAt, replaced);
+    // The user's End, then the agent's next call: a new browser.
+    h.advance(3000);
+    await h.mgr.stopChat(KEY, 'user_ended');
+    await h.mgr.ensure(KEY, { check: true });
+    assert.equal(link.startedAt, h.now());
+    assert.ok(link.startedAt > replaced);
+});
+
+test('the link\'s startedAt is kept across a bridge restart', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'pods-started-')), 'links.json');
+    const h = harness({ store: new LinkStore({ path }) });
+    await h.mgr.ensure(A);
+    const at = h.store.findChat(A).startedAt;
+    h.store.flush();
+    assert.equal(new LinkStore({ path }).findChat(A).startedAt, at);
+});
+
 test('concurrent calls for one chat start one pod', async () => {
     const h = harness({ ensureMs: 30 });
     const ds = await Promise.all([h.mgr.ensure(A), h.mgr.ensure(A), h.mgr.ensure(A)]);

@@ -43,7 +43,10 @@ function fakePods(store) {
             if (!c || c.state !== 'running') {
                 c = { sessionId: `s${++n}`, state: 'running', slot: chats.size, source };
                 chats.set(key, c);
-                c.linkId = store.forChat(key, c.sessionId).id;
+                const link = store.forChat(key, c.sessionId);
+                c.linkId = link.id;
+                // As pods.mjs: a new browser stamps the link's startedAt (always later than the last).
+                store.update(link, { startedAt: Math.max(Date.now(), (link.startedAt ?? 0) + 1) });
             }
             return { chat_key: key, state: 'running', session_id: c.sessionId, link_id: c.linkId, slot: c.slot, api_url: `http://127.0.0.1:${8100 + c.slot}`, mcp_url: `http://127.0.0.1:${8100 + c.slot}/mcp`, novnc_port: 6100 + c.slot };
         },
@@ -98,7 +101,7 @@ function fakePods(store) {
 }
 
 let server, base, store, pods, bridgeApp;
-async function start({ withPods = true, novncUrl = 'http://localhost:6080/vnc.html' } = {}) {
+async function start({ withPods = true, novncUrl = 'http://localhost:6080/vnc.html', tools = null } = {}) {
     const dir = mkdtempSync(join(tmpdir(), 'chatpods-'));
     store = new LinkStore({ path: join(dir, 'links.json'), idleMs: 3600_000 });
     pods = withPods ? fakePods(store) : null;
@@ -107,7 +110,7 @@ async function start({ withPods = true, novncUrl = 'http://localhost:6080/vnc.ht
         client: shared, store, log: () => {},
         config: {
             bridgeToken: TOKEN, vncPassword: 'sharedpw', novncUrl, pods, tunnelCheckMs: 50,
-            listTools: async () => [{ name: 'browser.observe', inputSchema: { properties: { session_id: {} } } }],
+            listTools: async () => tools ?? [{ name: 'browser.observe', inputSchema: { properties: { session_id: {} } } }],
             onEnd: pods ? async ({ id }) => { const c = pods.chatForLink(id); if (c) await pods.stopChat(c.chatKey, 'user_ended'); } : null,
         },
     });
@@ -152,6 +155,21 @@ test('/api/pod starts the chat\'s pod; the chat link is found by chat key, each 
     assert.equal(d.id, a.link_id);
     assert.equal(d.live, true);
     assert.equal(d.pod, 'running');
+    // The browser it shows and when that browser started, for the app to open its player.
+    assert.equal(d.sessionId, a.session_id);
+    assert.equal(typeof d.startedAt, 'number');
+    const same = await (await fetch(`${base}/live/chat/${KEY_A}`)).json();
+    assert.equal(same.startedAt, d.startedAt, 'a lookup changes nothing');
+    await api('/api/pod', { chat_key: KEY_A, source: 'happy' });
+    assert.equal((await (await fetch(`${base}/live/chat/${KEY_A}`)).json()).startedAt, d.startedAt, 'a running browser keeps its startedAt');
+    // A restart in the same link: a new session and a later startedAt.
+    await pods.stopChat(KEY_A, 'crashed');
+    const r = await (await api('/api/pod', { chat_key: KEY_A, source: 'happy' })).json();
+    const d2 = await (await fetch(`${base}/live/chat/${KEY_A}`)).json();
+    assert.equal(d2.id, a.link_id, 'the same link');
+    assert.equal(d2.sessionId, r.session_id);
+    assert.notEqual(d2.sessionId, d.sessionId);
+    assert.ok(d2.startedAt > d.startedAt);
     assert.equal((await fetch(`${base}/live/chat/${'c'.repeat(32)}`)).status, 404);
     // By session too, for a process that only knows the session.
     const s = await (await api('/api/pod', { session_id: b.session_id })).json();
@@ -514,6 +532,8 @@ const UP_TOOLS = [
     { name: 'browser.close_session', inputSchema: { type: 'object', properties: { session_id: { type: 'string' } } } },
     { name: 'browser.fork_session', inputSchema: { type: 'object', properties: { session_id: { type: 'string' } } } },
     { name: 'browser.screenshot', inputSchema: { type: 'object', properties: { session_id: { type: 'string' }, label: { type: 'string' } }, additionalProperties: false } },
+    { name: 'browser.list_sessions', inputSchema: { type: 'object', properties: {} } },
+    { name: 'browser.list_tabs', inputSchema: { type: 'object', properties: { session_id: { type: 'string' } } } },
 ];
 
 function mcpHarness({ chat = { key: KEY_A, source: 'happy' }, podsOn = true, refuseOnce = false, recoverOnce = null, capped = false, shared: sharedMode = 'ok', linkStatus = 'watching', screenReply = null } = {}) {
@@ -556,6 +576,11 @@ function mcpHarness({ chat = { key: KEY_A, source: 'happy' }, podsOn = true, ref
         if (path === '/api/tools') return json(200, { tools: UP_TOOLS });
         if (path === '/api/pod') {
             const key = body.chat_key;
+            if (body.peek) {
+                const p = podFor.get(key);
+                if (!p) return json(404, { error: 'no_browser' });
+                return json(200, { chat_key: key, session_id: p.sid, mcp_url: `http://127.0.0.1:${8100 + p.slot}/mcp`, api_url: `http://127.0.0.1:${8100 + p.slot}`, link_id: `L${p.slot}` });
+            }
             if (capped && body.check) return json(503, { error: "this chat's browser died 2 times in 5 minutes; not restarting it again yet", code: 'recovery_limit' });
             const made = !podFor.has(key);
             if (made || body.verify) podFor.set(key, { slot: n, sid: `pod${n++}` });
@@ -741,6 +766,55 @@ test('preflight: a recovered browser answers a read-only call with a note, and r
     assert.equal(mu.seen.calls.length, 0, 'nothing reached the pod');
     // The next call is against the recovered browser as usual.
     assert.equal((await mu.call('browser_execute_action', { action: 'click' })).result.isError, undefined);
+});
+
+test('state tools: list_sessions after the user\'s End starts no pod and leaves the link done', async () => {
+    await start({ tools: UP_TOOLS });
+    const a = await (await api('/api/pod', { chat_key: KEY_A, source: 'happy' })).json();
+    await fetch(`${base}/live/${a.link_id}/end`, { method: 'POST' });
+    const ensured = pods.calls.ensure.length;
+    const upCalls = [];
+    const mcp = createMcpServer({
+        bridgeUrl: base, bridgeToken: TOKEN, write: (m) => out.push(m), retryMs: 0,
+        upstream: { listTools: async () => UP_TOOLS, async callTool(name) { upCalls.push(name); return { result: { content: [] } }; } },
+        chatPods: { chat: { key: KEY_A, source: 'happy' }, makeUpstream: () => ({ listTools: async () => UP_TOOLS, async callTool(name) { upCalls.push(name); return { result: { content: [] } }; } }) },
+    });
+    const out = [];
+    for (const [i, name] of ['browser_list_sessions', 'browser_get_session', 'browser_list_tabs'].entries()) {
+        await mcp.handle({ jsonrpc: '2.0', id: i + 1, method: 'tools/call', params: { name, arguments: {} } });
+        const r = out.find((m) => m.id === i + 1).result;
+        assert.equal(r.isError, false, name);
+        assert.equal(r.structuredContent.running, false, name);
+        assert.equal(r.structuredContent.ended_by_user, true, name);
+        assert.match(r.structuredContent.note, /user ended it.*Nothing was started/, name);
+    }
+    assert.deepEqual(out.find((m) => m.id === 1).result.structuredContent.sessions, []);
+    assert.equal(pods.calls.ensure.length, ensured, 'no pod was started');
+    assert.equal(pods.podState(KEY_A), 'asleep');
+    assert.deepEqual(upCalls, [], 'no browser was asked');
+    const d = await (await fetch(`${base}/live/chat/${KEY_A}`)).json();
+    assert.deepEqual([d.status, d.reason, d.live], ['done', 'user_ended', false], 'the link stays done');
+
+    // With the browser running, a state tool goes to it as before (no check, no restart).
+    await api('/api/pod', { chat_key: KEY_A, source: 'happy' });
+    const before = pods.calls.ensure.length;
+    await mcp.handle({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'browser_list_sessions', arguments: {} } });
+    assert.equal(out.find((m) => m.id === 9).result.isError, undefined);
+    assert.equal(pods.calls.ensure.length, before);
+    assert.deepEqual(upCalls, ['browser.list_sessions']);
+});
+
+test('state tools: a chat that never had a browser is answered without starting one', async () => {
+    const h = mcpHarness({ chat: { key: 'e'.repeat(32), source: 'happy' } });
+    const r = await h.call('browser_list_sessions', {});
+    assert.equal(r.result.isError, false);
+    assert.deepEqual(r.result.structuredContent.sessions, []);
+    assert.equal(r.result.structuredContent.ended_by_user, undefined);
+    assert.ok(h.seen.bridge.filter((b) => b.path === '/api/pod').every((b) => b.body.peek === true), 'only peeks');
+    assert.equal(h.seen.calls.length, 0);
+    // observe still starts the chat's browser.
+    await h.call('browser_observe', {});
+    assert.ok(h.seen.bridge.some((b) => b.path === '/api/pod' && b.body.check === true));
 });
 
 test('preflight: the loop cap comes back as a clear error', async () => {

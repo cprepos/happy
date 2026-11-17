@@ -580,8 +580,11 @@ export function createPodManager({
                 Object.assign(chat, { slot: mine.slot, podId: mine.podId, sessionId: session.id, state: 'running', lastAgentAt: now(), checkedAt: now(), fresh: false });
                 const link = store?.forChat?.(chatKey, session.id);
                 if (link) chat.linkId = link.id;
-                // A fresh start's link forgets the page it was ended on.
-                if (link && fresh) store.update?.(link, { url: null, title: null });
+                // A fresh start's link forgets the page it was ended on. A new browser (the chat's
+                // first, the first after the user's End, or one replacing a dead or asleep one)
+                // stamps the link's startedAt, so the app opens its player for it.
+                const started = !previous || fresh || !!(recovery && check);
+                if (link && (fresh || started)) store.update?.(link, { ...(fresh ? { url: null, title: null } : {}), ...(started ? { startedAt: now() } : {}) });
                 const timing = { warm: wasWarm, spare: fromSpare, total_ms: now() - t0, session_ms: sessionMs, ...(wasWarm ? {} : mine.timings), at: now() };
                 timings.push(timing);
                 if (timings.length > 50) timings.shift();

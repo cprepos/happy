@@ -37,7 +37,7 @@
 //                              user_slept, waking waiters). The link stays watching, so the next
 //                              agent call or /take wakes it on its last page. 409 pods_disabled
 //                              without pods, 409 <reason> on a done link; asleep already: no change
-//   GET  /live/chat/<chat_key> which link belongs to this chat: {id, url, live, pod, ...state};
+//   GET  /live/chat/<chat_key> which link belongs to this chat: {id, url, sessionId, startedAt, live, pod, ...state};
 //                              404 when the chat has none. chat_key is sha256("happy:" + the Happy
 //                              session id), first 32 hex chars. The source of truth for whether
 //                              a chat shows a live browser.
@@ -883,10 +883,12 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
 
     // GET /live/chat/<chat_key>: the chat's link, so the app can show a chat's live browser
     // without finding the link in the chat's text. live: a browser is up (or starting) for it.
+    // sessionId/startedAt: the browser it shows and when that browser started (a new one, or one
+    // replacing a dead or asleep one, has a later startedAt), so the app can open its player.
     function chatLink(res, key, base) {
         const rec = store.findChat(key);
         if (!rec) return send(res, 404, { error: 'no_link' });
-        return send(res, 200, { id: rec.id, url: linkUrl(rec, base), ...stateOf(rec), ...liveOf(rec) });
+        return send(res, 200, { id: rec.id, url: linkUrl(rec, base), sessionId: rec.sessionId ?? null, startedAt: rec.startedAt ?? rec.createdAt ?? null, ...stateOf(rec), ...liveOf(rec) });
     }
 
     // POST /live/<id>/nav: back, forward, reload or goto on the link's own session, for the
