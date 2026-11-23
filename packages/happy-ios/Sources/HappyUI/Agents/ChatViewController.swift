@@ -1050,7 +1050,7 @@ final class ChatViewController: UIViewController, ComposeHosting, KeyboardPushed
         showIntro()
         updateLoadFailure()
         if !snapshot.items.isEmpty { dismissNewWorkPanel() }
-        if !previewing { liveDock.update(link: snapshot.latestLiveBrowser) }
+        updateLiveBrowserLink(snapshot)
         updateLiveBrowserWait()
         updatePrimary()
         updateChips()

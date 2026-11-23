@@ -236,6 +236,9 @@ public struct ChatSnapshotFacts: Equatable, Sendable {
     /// The chat's one live view: the newest live browser the agent linked
     /// (`LiveBrowserLink.latest`), in the messages loaded.
     public var liveBrowser: LiveBrowserLink?
+    /// The newest navigate in the messages loaded (`LiveBrowserNavigate`):
+    /// a new one brings the red line up.
+    public var liveNavigate: LiveBrowserNavigate?
 
     public init(_ snapshot: LegacyChatSnapshot) {
         isLoaded = snapshot.isLoaded
@@ -250,6 +253,8 @@ public struct ChatSnapshotFacts: Equatable, Sendable {
         var stored = Set<String>()
         var live: LiveBrowserLink?
         var newestLive = Int64.min
+        var navigate: LiveBrowserNavigate?
+        var newestNavigate = Int64.min
         for message in snapshot.messages {
             switch message {
             case .toolCall(let call):
@@ -261,6 +266,10 @@ public struct ChatSnapshotFacts: Equatable, Sendable {
                 if at >= newestLive, let link = LiveBrowserLink.latest(inResult: call.tool.result) {
                     newestLive = at
                     live = link
+                }
+                if at >= newestNavigate, let found = LiveBrowserNavigate(id: call.tool.callId ?? call.id, tool: call.tool.name, input: call.tool.input, result: call.tool.result) {
+                    newestNavigate = at
+                    navigate = found
                 }
             case .userText(let user):
                 if let localId = user.localId { stored.insert(localId) }
@@ -274,6 +283,7 @@ public struct ChatSnapshotFacts: Equatable, Sendable {
             }
         }
         liveBrowser = live
+        liveNavigate = navigate
         hasPendingQuestion = pendingQuestion
         storedLocalIds = stored
     }

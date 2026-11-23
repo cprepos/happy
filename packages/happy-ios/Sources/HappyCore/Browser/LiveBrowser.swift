@@ -640,3 +640,56 @@ extension ChatSnapshot {
         return nil
     }
 }
+
+/// A tool call that moved the chat's browser to a page, and the live link
+/// its result carries: a `browser_execute_action` navigate, or a
+/// `browser_create_session` (it opens its start page), under any MCP
+/// prefix. Each new one brings the red line up; other actions don't.
+public struct LiveBrowserNavigate: Equatable, Sendable {
+    /// The call's id: a navigate is told from the last one by it.
+    public var id: String
+    public var link: LiveBrowserLink
+
+    public init(id: String, link: LiveBrowserLink) {
+        self.id = id
+        self.link = link
+    }
+
+    /// Nil unless the call navigated and its result carries a live link.
+    public init?(id: String, tool name: String, input: JSONValue?, result: JSONValue?) {
+        guard !id.isEmpty, Self.isNavigate(tool: name, input: input),
+              let link = LiveBrowserLink.latest(inResult: result) else { return nil }
+        self.init(id: id, link: link)
+    }
+
+    /// The call moves the browser to a page. Its input may come as an
+    /// object or as the JSON text of one.
+    public static func isNavigate(tool name: String, input: JSONValue?) -> Bool {
+        switch ChatToolDisplay.browserToolName(name) {
+        case "browser_create_session": return true
+        case "browser_execute_action":
+            var input = input
+            if let text = input?.stringValue, let data = text.data(using: .utf8) {
+                input = try? JSONDecoder().decode(JSONValue.self, from: data)
+            }
+            // `{"action": {"action": "navigate", ...}}`, or flat.
+            let action = input?["action"]
+            return (action?["action"] ?? action)?.stringValue == "navigate"
+        default: return false
+        }
+    }
+}
+
+extension ChatSnapshot {
+    /// The chat's newest navigate (`LiveBrowserNavigate`) among the loaded
+    /// items, or nil.
+    public var latestLiveNavigate: LiveBrowserNavigate? {
+        for item in items.reversed() {
+            guard case .tool(let tool) = item.role else { continue }
+            if let navigate = LiveBrowserNavigate(id: tool.callId.isEmpty ? item.id : tool.callId, tool: tool.name, input: tool.arguments, result: tool.result) {
+                return navigate
+            }
+        }
+        return nil
+    }
+}

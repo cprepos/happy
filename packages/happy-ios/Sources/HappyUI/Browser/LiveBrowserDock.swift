@@ -78,6 +78,14 @@ final class LiveBrowserDock: NSObject {
     var link: LiveBrowserLink? { feed?.link }
     /// The newest link the chat's transcript holds.
     private var transcriptLink: LiveBrowserLink?
+    /// The id of the chat's newest navigate as last seen, in memory only.
+    /// The first, as the chat opens, is history: it changes nothing.
+    private var seenNavigate: String?
+    private var navigateKnown = false
+    /// A new navigate's link, until the bridge next answers for the chat:
+    /// its browser runs, as far as the line goes, so it shows as soon as
+    /// the feed reads rather than after the lookup's next turn.
+    private var navigated: LiveBrowserLink?
     /// The bridge's answer for this chat, asked while it shows.
     private(set) var chatWatch: LiveBrowserChatWatch?
     let indicator = LiveBrowserIndicatorView()
@@ -196,6 +204,33 @@ final class LiveBrowserDock: NSObject {
         lookUp(keys: key.map { [$0] } ?? [])
     }
 
+    /// `update(link:)`, with the chat's newest navigate once its transcript
+    /// has loaded (`LiveBrowserNavigate`). One not seen before brings the
+    /// red line up, never the player: its link is followed, and the bridge
+    /// and the feed are asked now, not at their next turn.
+    func update(link: LiveBrowserLink?, navigate: LiveBrowserNavigate?) {
+        let fresh = navigateKnown && navigate != nil && navigate?.id != seenNavigate
+        navigateKnown = true
+        if let navigate { seenNavigate = navigate.id }
+        // Only while a bridge lookup is, or will be, there to answer it.
+        if fresh, chatWatch != nil || routing != nil || (routesItself && routedFor == nil) { navigated = navigate?.link }
+        update(link: link)
+        guard fresh else { return }
+        LiveBrowserLog.info("live browser: the agent navigated; the line comes up")
+        wake()
+    }
+
+    /// After a navigate: a feed that gave up on its browser is made anew,
+    /// a resting one reads again, and the bridge is asked for the chat.
+    private func wake() {
+        guard routing == nil, !(routesItself && routedFor == nil) else { return }
+        if let feed, feed.link.id == navigated?.id, feed.phase.isOver, feed.phase != .unavailable, !holdsControl {
+            rebuildFeed(feed.link)
+        }
+        reconsiderFeed()
+        retryBrowser()
+    }
+
     /// `lookUp(key:)` by the first of `keys` that names a link, in order;
     /// none stops asking.
     func lookUp(keys: [String]) {
@@ -205,8 +240,10 @@ final class LiveBrowserDock: NSObject {
         }
         chatWatch?.close()
         chatWatch = keys.isEmpty ? nil : LiveBrowserChatWatch(keys: keys) { [weak self] in self?.lookupTransport() }
+        // No bridge to answer for the chat: no navigate waits on it.
+        if chatWatch == nil { navigated = nil }
         chatWatch?.onChange = { [weak self] _ in self?.lookupChanged() }
-        chatWatch?.onAnswer = { [weak self] _ in self?.checkInStep() }
+        chatWatch?.onAnswer = { [weak self] _ in self?.answered() }
         chatWatch?.eager = player != nil
         chatWatch?.setVisible(isOnScreen)
         lookupChanged()
@@ -240,6 +277,18 @@ final class LiveBrowserDock: NSObject {
         openPlayer()
     }
 
+    /// Each answer of the bridge's for the chat: a navigate waits on it no
+    /// longer, and the bridge's word goes again.
+    private func answered() {
+        if navigated != nil {
+            navigated = nil
+            follow()
+            reconsiderFeed()
+            refresh()
+        }
+        checkInStep()
+    }
+
     /// The bridge's answers in a row that disagreed with the line.
     private var outOfStep = 0
 
@@ -270,6 +319,8 @@ final class LiveBrowserDock: NSObject {
     private func settleFeed() {
         guard let feed, let chat = chatWatch?.answer.chat, chat.link == feed.link else { return }
         if !chat.running {
+            // Navigated since that answer: it runs until the bridge says.
+            guard navigated == nil else { return }
             var state = chat.state
             // Done or dead at the bridge is asleep here: the agent's next
             // browser call resumes it from the saved cookies and page.
@@ -294,16 +345,22 @@ final class LiveBrowserDock: NSObject {
         refresh()
     }
 
-    /// The link to show: the bridge's for this chat, else the transcript's.
+    /// The link to show: a navigate's the bridge hasn't answered since,
+    /// else the bridge's for this chat, else the transcript's. The same
+    /// browser at another origin is the one already shown.
     private func follow() {
-        show(link: chatWatch?.answer.chat?.link ?? transcriptLink)
+        var link = chatWatch?.answer.chat?.link ?? transcriptLink
+        if let navigated, navigated.id != link?.id {
+            link = navigated.id == self.link?.id ? self.link : navigated
+        }
+        show(link: link)
         settleFeed()
     }
 
     /// The bridge says no browser runs for this link now (`live` false):
     /// no line, and the dock reads nothing, so the browser can sleep.
     private var lookupSaysIdle: Bool {
-        guard let chat = chatWatch?.answer.chat, chat.link == feed?.link else { return false }
+        guard navigated == nil, let chat = chatWatch?.answer.chat, chat.link == feed?.link else { return false }
         return !chat.running
     }
 

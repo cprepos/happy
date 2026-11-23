@@ -86,6 +86,9 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     }()
     /// The transcript's newest live link.
     private var liveTranscriptLink: LiveBrowserLink?
+    /// The transcript's newest navigate, as given the dock once loaded.
+    private var liveNavigate: LiveBrowserNavigate?
+    private var liveNavigateLoaded = false
     /// The paired computers, watched while the chat is shown: a chat routed
     /// before they were read at launch, or before one was paired, found no
     /// computer and asked nothing; it routes again when they change.
@@ -2195,7 +2198,7 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
                 dismissAnsweredQuestions(facts)
                 updatePlaceholder()
                 updateComposer()
-                updateLiveBrowser(facts.liveBrowser)
+                updateLiveBrowser(facts)
                 if rigActivity.show(RigActivityIndicator.indicators(session.metadata), running: facts.runningSubagents) { updateDockBars() }
             }
             if let forms = update.questionForms { questionForms = forms }
@@ -2450,12 +2453,23 @@ final class LegacyChatViewController: UIViewController, ChatListViewDelegate, Ch
     }
 
     /// The chat's newest live link in its transcript, read through the
-    /// computer the dock decides for the chat (`route(_:through:)`).
-    private func updateLiveBrowser(_ link: LiveBrowserLink?) {
-        guard link != liveTranscriptLink else { return }
+    /// computer the dock decides for the chat (`route(_:through:)`), and
+    /// its newest navigate once the history has loaded: a navigate in what
+    /// loads as the chat opens is none the dock is told of as new.
+    private func updateLiveBrowser(_ facts: ChatSnapshotFacts) {
+        let link = facts.liveBrowser
+        let linkChanged = link != liveTranscriptLink
+        let navigateChanged = facts.isLoaded && (!liveNavigateLoaded || facts.liveNavigate != liveNavigate)
+        guard linkChanged || navigateChanged else { return }
         liveTranscriptLink = link
-        routeLiveBrowser()
-        liveDock.update(link: link)
+        if linkChanged { routeLiveBrowser() }
+        if facts.isLoaded {
+            liveNavigateLoaded = true
+            liveNavigate = facts.liveNavigate
+            liveDock.update(link: link, navigate: facts.liveNavigate)
+        } else {
+            liveDock.update(link: link)
+        }
     }
 
     /// Names the chat to its live browser once its record is read: a bot's

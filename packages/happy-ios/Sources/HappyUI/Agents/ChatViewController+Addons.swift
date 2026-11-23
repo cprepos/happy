@@ -38,6 +38,18 @@ extension ChatViewController {
     /// The key the bridge is asked by first for this chat's browser.
     var liveBrowserKey: String { liveBrowserIdentity.keys()[0] }
 
+    /// The chat's newest live link, and its newest navigate once the
+    /// history has loaded: a navigate in what loads as the chat opens is
+    /// none the dock is told of as new.
+    func updateLiveBrowserLink(_ snapshot: ChatSnapshot) {
+        guard !previewing else { return }
+        if snapshot.loaded {
+            liveDock.update(link: snapshot.latestLiveBrowser, navigate: snapshot.latestLiveNavigate)
+        } else {
+            liveDock.update(link: snapshot.latestLiveBrowser)
+        }
+    }
+
     /// What the agent waits on the person for (its question, its timed
     /// wait): the live browser's full screen says it.
     func updateLiveBrowserWait() {
