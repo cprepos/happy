@@ -93,9 +93,14 @@ the filler's files, `docker exec`, or the token file directly, on any machine.
   back. There is no purge.
 - `vault_compare {id, field, algo: sha256|sha512|bcrypt|argon2, digest, salt?}` returns
   `{match}`. It is rate limited (20 per login per 10 minutes).
-- `vault_pipe {id, field, target, args?}` feeds the value to the stdin of a command from the
-  filler policy's `pipe_targets` (for example docker-login or gh-token), **on prep-ml**, and
-  returns its exit code and scrubbed output.
+- `vault_pipe {id, field | custom_field | attachment, target, args?}` feeds one value to the
+  stdin of a command from the filler policy's `pipe_targets` (for example docker-login,
+  gh-token or gh-secret), **on prep-ml**, and returns its exit code and scrubbed output. Give
+  exactly one of `field` (username, password, totp), `custom_field` (a name from vault_list's
+  `custom_fields`) or `attachment` (an id from vault_list's `attachments: [{id, file_name}]`).
+  An attachment must be UTF-8 text of at most 1 MiB and is passed byte for byte; targets whose
+  command uses `{username}` are refused for it. Example, a saved `.p8` key into a repo secret:
+  `vault_pipe {id, attachment, target: "gh-secret", args: {name: "ASC_KEY_P8", repo: "owner/repo"}}`.
 - `vault_save_download {download_id, item? | new_item?: {name, uris?}, file_name?}` moves a file
   this chat's browser downloaded into the vault as an encrypted attachment. Give exactly one of
   `item` (an existing item's name or id) and `new_item` (a new Secure Note). See "Saving a
