@@ -9,7 +9,7 @@
 //   remove  {id}                                  -> {id, trashed: true} (soft delete)
 //   restore {id}                                  -> meta
 //   compare {id, field | custom_field, algo, digest, salt?} -> {match}
-//   pipe    {id, field | custom_field, target, args?}      -> {target, argv, value}
+//   pipe    {id, field | custom_field | attachment, target, args?} -> {target, argv, value}
 //   save_download {download_id, item | new_item:{name, uris?}, file_name?,
 //           session_id, controller_port?} -> {item_id, item_name, attachment_id,
 //           file_name, size, sha256, download_deleted}
@@ -38,7 +38,16 @@
 // all_items clients and by explicit secrets whose policy lists it in
 // custom_fields. Two custom fields with the same name are refused as
 // ambiguous, so only one value is ever chosen. The audit names it
-// "custom:<name>", never its value. A new or
+// "custom:<name>", never its value.
+//
+// pipe also takes attachment (an attachment id from vault_list's attachments,
+// on a login or secure note the client reaches), into any pipe target the
+// client may use: the file is read from the vault into memory (at most
+// MAX_PIPE_ATTACHMENT), must be UTF-8 text (a PEM key, a JSON key file), and is
+// handed back as is, byte for byte; the Buffer is zeroed once decoded. Nothing
+// is written to disk on the way. A target with {username} in its argv is
+// refused for an attachment, which has no login. The audit names it
+// "attachment:<id>". A new or
 // rotated password is always random (generate.mjs), made here; an agent never
 // supplies one. compare answers match or no match, never a hash. pipe is the
 // one route that hands a value back: to vault-mcp's pipe runner, which writes
@@ -68,6 +77,10 @@ export const ACTIONS = ['list', 'search', 'create', 'update', 'remove', 'restore
 /** The largest download save_download moves into the vault (bytes). */
 export const MAX_DOWNLOAD = 100 * 1024 * 1024;
 const DOWNLOAD_ID = /^[0-9a-f]{12}$/;
+/** The largest attachment pipe sends to a command's stdin (bytes). */
+export const MAX_PIPE_ATTACHMENT = 1024 * 1024;
+/** A Vaultwarden attachment id (as vault.mjs checks the one the server returns). */
+const ATTACHMENT_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const KEYS = {
     list: ['include_trash'],
     search: ['query', 'include_trash'],
@@ -76,7 +89,7 @@ const KEYS = {
     remove: ['id'],
     restore: ['id'],
     compare: ['id', 'field', 'custom_field', 'algo', 'digest', 'salt'],
-    pipe: ['id', 'field', 'custom_field', 'target', 'args'],
+    pipe: ['id', 'field', 'custom_field', 'attachment', 'target', 'args'],
     save_download: ['download_id', 'item', 'new_item', 'file_name', 'session_id', 'controller_port'],
 };
 const bad = (msg) => new FillError(msg, 400, 'bad_request');
@@ -104,15 +117,26 @@ export function checkUris(v) {
 }
 const checkBool = (v, what) => { if (v !== undefined && typeof v !== 'boolean') throw bad(`${what} must be true or false`); return v === true; };
 const checkField = (v) => { if (!FIELDS.includes(v)) throw bad(`field must be one of ${FIELDS.join(', ')}`); return v; };
-/** compare/pipe: {field} or {custom}, from exactly one of body.field and body.custom_field. */
-function checkWhich(body) {
+/**
+ * compare/pipe: {field}, {custom} or (pipe only) {attachment}, from exactly one
+ * of body.field, body.custom_field and body.attachment.
+ */
+function checkWhich(body, { attachment = false } = {}) {
     const hasField = body.field !== undefined; const hasCustom = body.custom_field !== undefined;
-    if (hasField === hasCustom) throw bad('give exactly one of field (username, password, totp) and custom_field (a custom field name from vault_list)');
+    const hasAtt = attachment && body.attachment !== undefined;
+    if ([hasField, hasCustom, hasAtt].filter(Boolean).length !== 1) {
+        if (attachment) throw bad('give exactly one of field (username, password, totp), custom_field (a custom field name from vault_list) and attachment (an attachment id from vault_list)');
+        throw bad('give exactly one of field (username, password, totp) and custom_field (a custom field name from vault_list)');
+    }
     if (hasField) return { field: checkField(body.field) };
+    if (hasAtt) {
+        if (typeof body.attachment !== 'string' || !ATTACHMENT_ID.test(body.attachment)) throw bad('attachment must be an attachment id from vault_list (1..64 of A-Z a-z 0-9 _ -)');
+        return { attachment: body.attachment };
+    }
     if (typeof body.custom_field !== 'string' || !CUSTOM_FIELD_NAME.test(body.custom_field)) throw bad('custom_field must be 1..64 of A-Z a-z 0-9 space _ . - (a name from vault_list custom_fields)');
     return { custom: body.custom_field };
 }
-const kindOf = (w) => (w.custom !== undefined ? `custom:${w.custom}` : w.field);
+const kindOf = (w) => (w.attachment !== undefined ? `attachment:${w.attachment}` : w.custom !== undefined ? `custom:${w.custom}` : w.field);
 /** An attachment's file name: one path segment, printable, 1..200 characters. */
 function checkFileName(v, what) {
     const t = text(v, what, { max: 200 });
@@ -133,6 +157,7 @@ export function createManager({
     getPolicy, vault = null, vaults = null, audit, now = () => Date.now(),
     compareLimit = { max: 20, windowMs: 10 * 60_000 },
     controllers = () => null, saveLimit = { max: 20, windowMs: 10 * 60_000 }, maxDownload = MAX_DOWNLOAD,
+    maxPipeAttachment = MAX_PIPE_ATTACHMENT,
 }) {
     const compares = new Map(); // `${client}/${id}` -> [timestamps]
     const saves = new Map(); // client -> [timestamps]
@@ -240,6 +265,34 @@ export function createManager({
         const it = (await view(ctx, { trash })).find((x) => x.id === id);
         if (!it) throw new FillError('no login with that id is reachable from this chat (see vault_list)', 404, 'not_found');
         return it;
+    }
+    // pipe's value from an attachment of an item the client reaches: read into
+    // memory only, at most maxPipeAttachment, UTF-8 text kept byte for byte
+    // (a BOM and a trailing newline included). The Buffer is zeroed before return.
+    async function attachmentText(ctx, id, attId, name, target) {
+        if (target.argv.includes('{username}')) throw bad(`target ${name} puts the login's username in its command, and an attachment has none; pipe a field instead`);
+        if (ctx.vault.capabilities?.attach !== true || typeof ctx.vault.readAttachment !== 'function') {
+            throw new FillError(`this chat's vault (${ctx.vault.type || 'its provider'}) has no attachments to pipe`, 422, 'refused_unsupported');
+        }
+        const it = await item(ctx, id);
+        if (!(it.attachments || []).some((a) => a.id === attId)) throw new FillError('that item has no attachment with that id (see vault_list attachments)', 404, 'not_found');
+        const tooBig = () => new FillError(`that attachment is larger than ${Math.round(maxPipeAttachment / 1024)} KiB, the most vault_pipe sends`, 413, 'refused_size');
+        let bytes = null;
+        try {
+            bytes = await ctx.vault.readAttachment(id, attId, { maxBytes: maxPipeAttachment + 4096 }).catch((e) => {
+                if (e?.status === 413) throw tooBig();
+                throw vaultErr(e);
+            });
+            if (bytes.length > maxPipeAttachment) throw tooBig();
+            if (!bytes.length) throw new FillError('that attachment is empty', 404, 'not_found');
+            try {
+                return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+            } catch {
+                throw new FillError('that attachment is not text (UTF-8); vault_pipe sends text files only', 422, 'refused_not_text');
+            }
+        } finally {
+            if (bytes) bytes.fill(0);
+        }
     }
     async function slugFree(ctx, name, exceptId = null) {
         const slug = itemSlug(name);
@@ -353,7 +406,7 @@ export function createManager({
         pipe: (body) => run('pipe', body, async (ctx, ev) => {
             need(ctx, 'pipe');
             const id = checkId(ctx, body.id);
-            const which = checkWhich(body);
+            const which = checkWhich(body, { attachment: true });
             const what = which.custom !== undefined ? `custom field "${which.custom}"` : which.field;
             const name = typeof body.target === 'string' ? body.target : '';
             Object.assign(ev, { item_id: id, field_kind: kindOf(which), target: name.slice(0, 64) });
@@ -366,17 +419,19 @@ export function createManager({
             for (const [slot, re] of target.args) {
                 if (typeof args[slot] !== 'string' || !re.test(args[slot])) throw bad(`args.${slot} does not match what target ${name} allows`);
             }
+            const argvWith = (username) => target.argv.map((a) => {
+                if (a === '{username}') return username();
+                const m = /^\{arg:([a-z0-9_]+)\}$/.exec(a);
+                return m ? args[m[1]] : a;
+            });
+            if (which.attachment !== undefined) return { target: name, argv: argvWith(() => null), value: await attachmentText(ctx, id, which.attachment, name, target) };
             usable(await item(ctx, id), which);
             const { rec, value } = await valueOf(ctx, id, which);
             try {
                 if (!value) throw new FillError(`that login has no ${what} value`, 404, 'not_found');
-                const argv = target.argv.map((a) => {
-                    if (a === '{username}') {
-                        if (!rec.username) throw new FillError(`target ${name} needs the login's username, and it has none`, 422, 'refused');
-                        return rec.username;
-                    }
-                    const m = /^\{arg:([a-z0-9_]+)\}$/.exec(a);
-                    return m ? args[m[1]] : a;
+                const argv = argvWith(() => {
+                    if (!rec.username) throw new FillError(`target ${name} needs the login's username, and it has none`, 422, 'refused');
+                    return rec.username;
                 });
                 return { target: name, argv, value };
             } finally { wipe(rec, { keepUsername: true }); }
@@ -450,7 +505,10 @@ export function createManager({
             if (recent.length >= saveLimit.max) throw new FillError(`too many downloads saved to the vault; wait ${Math.ceil(saveLimit.windowMs / 60_000)} minutes`, 429, 'rate_limited');
             recent.push(t); saves.set(ctx.client, recent);
 
-            let bytes = null; let back = null;
+            // Any failure from here on: the browser's download is kept as it was
+            // (it is deleted only after a verified vault copy), the filler holds
+            // the bytes in memory only, and the error tells the agent so.
+            let bytes = null; let back = null; let newNoteId = null;
             try {
                 bytes = await r.controller.fetchDownload(session, stored, { maxBytes: maxDownload }).catch((e) => {
                     if (e?.status === 413) throw new FillError(`that download is larger than ${Math.round(maxDownload / 1024 / 1024)} MiB, the most the vault takes from the browser`, 413, 'refused_size');
@@ -464,17 +522,17 @@ export function createManager({
                 if (hasItem) { itemId = target.id; itemName = target.name; } else {
                     const textBody = newItem.uris.length ? newItem.uris.join('\n') : null;
                     itemId = await ctx.vault.createNote({ name: newItem.name, text: textBody }).catch((e) => { throw vaultErr(e); });
-                    itemName = newItem.name;
+                    itemName = newItem.name; newNoteId = itemId;
                 }
                 ev.item_id = itemId;
                 ev.changed = 'attachment';
                 const attachmentId = await ctx.vault.addAttachment(itemId, fileName, bytes).catch((e) => { throw vaultErr(e); });
                 back = await ctx.vault.readAttachment(itemId, attachmentId, { maxBytes: maxDownload + 4096 }).catch((e) => {
-                    throw new FillError(`the file was stored, but reading it back failed (${vaultErr(e).message}); the download was kept`, 502, 'verify_failed');
+                    throw new FillError(`the file was stored, but reading it back failed (${vaultErr(e).message})`, 502, 'verify_failed');
                 });
                 const backSha = createHash('sha256').update(back).digest();
                 const same = back.length === size && timingSafeEqual(backSha, Buffer.from(sha256, 'hex'));
-                if (!same) throw new FillError('the vault copy does not match the download; the download and the vault copy were both kept', 502, 'verify_failed');
+                if (!same) throw new FillError('the vault copy does not match the download; the vault copy was kept too', 502, 'verify_failed');
 
                 let deleted = false; let note;
                 try {
@@ -485,6 +543,10 @@ export function createManager({
                 }
                 if (!deleted && !note) note = 'saved and verified, but the browser did not confirm deleting its copy';
                 return { item_id: itemId, item_name: itemName, attachment_id: attachmentId, file_name: fileName, size, sha256, download_deleted: deleted, ...(note ? { note } : {}) };
+            } catch (err0) {
+                const err = vaultErr(err0);
+                const noted = newNoteId ? ` The new note "${newItem.name}" (${newNoteId}) was created; give item: "${newNoteId}" to try again.` : '';
+                throw new FillError(`${err.message}. The download was not deleted: it is still in this chat's browser (browser_list_downloads).${noted}`, err.status, err.outcome);
             } finally {
                 if (bytes) bytes.fill(0);
                 if (back) back.fill(0);

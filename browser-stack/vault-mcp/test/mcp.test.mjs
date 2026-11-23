@@ -267,6 +267,46 @@ test('vault_pipe with custom_field: the value is scrubbed as [secret:<name>]', a
     } finally { await f.close(); }
 });
 
+test('vault_pipe with attachment: exactly one of three sources; the file goes to stdin only, scrubbed as [secret:attachment:<file name>]', async () => {
+    const PEM = '-----BEGIN PRIVATE KEY-----\nMIGTAgEAMBMGByqGSM49AgEGCCqGSM49McpAttachCanary+/=\n-----END PRIVATE KEY-----\n';
+    const f = await fakeFiller((call) => (call.path === '/v1/vault/list'
+        ? [200, { client: 'agent', items: [{ id: ID, name: 'ASC key', kind: 'note', attachments: [{ id: 'att0123', file_name: 'AuthKey_X.p8', size: PEM.length }] }] }]
+        : [200, { target: 'gh-secret', argv: ECHO, value: PEM }]));
+    try {
+        const c = client({ fillerUrl: f.url });
+        const t = TOOLS.find((x) => x.name === 'vault_pipe');
+        assert.equal(t.inputSchema.properties.attachment.pattern, '^[A-Za-z0-9_-]{1,64}$');
+        assert.ok(!t.inputSchema.required.includes('attachment'));
+        assert.match(t.description, /any target/i);
+        assert.match(t.description, /attachment/);
+        for (const args of [
+            { id: ID, target: 'gh-secret' },
+            { id: ID, target: 'gh-secret', field: 'password', attachment: 'att0123' },
+            { id: ID, target: 'gh-secret', custom_field: 'token', attachment: 'att0123' },
+            { id: ID, target: 'gh-secret', field: 'password', custom_field: 'token', attachment: 'att0123' },
+        ]) {
+            const r = await c.call('vault_pipe', args);
+            assert.equal(r.result.isError, true);
+            assert.match(textOf(r), /exactly one of field, custom_field, attachment/);
+        }
+        for (const [bad, msg] of [['', /too short/], ['a/b', /expected form/], ['x'.repeat(65), /too long/]]) {
+            assert.match(textOf(await c.call('vault_pipe', { id: ID, target: 'gh-secret', attachment: bad })), msg);
+        }
+        assert.equal(f.calls.length, 0, 'refused locally');
+        const args = { id: ID, attachment: 'att0123', target: 'gh-secret', args: { name: 'ASC_KEY_P8', repo: 'owner/repo' } };
+        const r = await c.call('vault_pipe', args);
+        const text = textOf(r);
+        assert.equal(r.result.isError, undefined, text);
+        const out = JSON.parse(text);
+        assert.equal(out.exit_code, 0);
+        assert.match(out.stdout, /^got \[secret:attachment:AuthKey_X\.p8\]/);
+        assert.ok(!text.includes('McpAttachCanary') && !text.includes(Buffer.from(PEM).toString('base64')) && !text.includes(encodeURIComponent(PEM)));
+        assert.ok(!out.argv.some((a) => a.includes('McpAttachCanary')), 'never in argv');
+        assert.deepEqual(f.calls.find((x) => x.path === '/v1/vault/pipe').body, args);
+        assert.ok(!JSON.stringify(f.calls).includes('McpAttachCanary'), 'the value never goes back to the filler');
+    } finally { await f.close(); }
+});
+
 // A fake bridge /api/pod: chats (chat key -> {session_id, port}) have a running browser.
 async function fakeBridge(chats, { status = null } = {}) {
     const calls = [];

@@ -9,7 +9,9 @@
 // No tool returns a password, TOTP or custom field value. New passwords are generated in
 // the filler. vault_compare answers match or no match. vault_pipe is the one
 // call where a value reaches this process: lib/pipe.mjs writes it to an
-// allowlisted command's stdin and returns only the scrubbed output.
+// allowlisted command's stdin and returns only the scrubbed output. The value
+// is a login field or the text of a vault attachment; it stays in memory here
+// (never a file, an argument or the environment) and is dropped after the call.
 // vault_remove is a soft delete to the vault trash; there is no purge.
 //
 // vault_save_download moves a file this chat's browser downloaded into the
@@ -51,9 +53,11 @@ const SPEC = {
 };
 const FIELD = { type: 'string', enum: ['username', 'password', 'totp'], description: 'Which value of the login: username, password, or totp (the stored TOTP seed or otpauth URI, not a current code). Give this or custom_field, not both.' };
 const CUSTOM_FIELD = { type: 'string', minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9 _.-]{1,64}$', description: 'The exact, case-sensitive name of one of the login\'s custom fields, as vault_list shows it in custom_fields (for example "token"). Give this or field, not both.' };
-// compare and pipe take exactly one of these (checked in checkArgs; not in the schema, since
-// tool schemas may not use a top-level oneOf).
+const ATTACHMENT = { type: 'string', minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9_-]{1,64}$', description: 'An attachment\'s id, as vault_list shows it in the item\'s attachments ([{id, file_name, size}]), on a login or a secure note. Its file (UTF-8 text, at most 1 MiB, such as a PEM key) is sent byte for byte. Give this, field or custom_field, only one.' };
+// compare takes exactly one of field and custom_field, pipe one of those and attachment
+// (checked in checkArgs; not in the schema, since tool schemas may not use a top-level oneOf).
 const ONE_OF = ['field', 'custom_field'];
+const PIPE_ONE_OF = ['field', 'custom_field', 'attachment'];
 const TRASH = { type: 'boolean', description: 'Also list logins in the vault trash (default false).' };
 const DOWNLOAD_ID = { type: 'string', pattern: '^[0-9a-f]{12}$', description: 'The download\'s id, exactly as browser_list_downloads shows it (12 hex characters).' };
 const ITEM = { type: 'string', minLength: 1, maxLength: 200, description: 'An existing vault item to attach the file to: its id or its exact name from vault_list (a login or a secure note). Give this or new_item, not both.' };
@@ -118,16 +122,16 @@ export const TOOLS = [
     },
     {
         name: 'vault_pipe',
-        description: 'Feed a login\'s value to the standard input of a command the vault owner allowlisted (the filler policy\'s pipe_targets, for example docker-login or gh-auth), for logging a CLI in without the value ever appearing in chat, arguments or files. Returns the command\'s exit code and output, with the value scrubbed out. Targets your client may not use are refused; the refusal lists the allowed ones. Give field (username, password, totp) or custom_field (a name from vault_list custom_fields, such as token); in the output the value shows as [secret:<field or custom field name>].',
+        description: 'Feed one vault value to the standard input of a command the vault owner allowlisted (the filler policy\'s pipe_targets, for example docker-login, gh-token or gh-secret), so the value never appears in chat, in arguments or in a file. Any value goes into any target your client may use: give exactly one of field (username, password, totp), custom_field (a name from vault_list custom_fields, such as token) or attachment (an attachment id from vault_list attachments: a file saved with vault_save_download, such as a .p8 key, sent byte for byte; text files up to 1 MiB; not with a target whose command needs the login\'s username). Returns the command\'s exit code and output, with the value scrubbed out: it shows as [secret:<field, custom field or attachment:file name>]. Targets your client may not use are refused; the refusal lists the allowed ones.',
         inputSchema: obj({
-            id: ID, field: FIELD, custom_field: CUSTOM_FIELD,
+            id: ID, field: FIELD, custom_field: CUSTOM_FIELD, attachment: ATTACHMENT,
             target: { type: 'string', minLength: 1, maxLength: 64, pattern: '^[a-z0-9][a-z0-9_-]*$', description: 'The pipe target\'s name.' },
             args: { type: 'object', additionalProperties: { type: 'string', maxLength: 256 }, description: 'Values for the target\'s {arg:slot} placeholders, each checked against the target\'s pattern.' },
-        }, ['id', 'target'], ONE_OF),
+        }, ['id', 'target'], PIPE_ONE_OF),
     },
     {
         name: 'vault_save_download',
-        description: 'Move a file this chat\'s browser downloaded into the vault as an encrypted attachment, on an existing item (item: its id or exact name) or on a new secure note (new_item), then delete the download from the browser once the vault copy is read back and matches. The file\'s contents never come back to you; the answer is {item_id, item_name, attachment_id, file_name, size, sha256, download_deleted}. Use this, never browser_read_download, for any sensitive file (statements, contracts, IDs, keys, exports). Only this chat\'s own downloads (browser_list_downloads) can be saved. If the vault copy does not match, nothing is deleted and the call fails.',
+        description: 'Move a file this chat\'s browser downloaded into the vault as an encrypted attachment, on an existing item (item: its id or exact name) or on a new secure note (new_item), then delete the download from the browser once the vault copy is read back and matches. The file\'s contents never come back to you; the answer is {item_id, item_name, attachment_id, file_name, size, sha256, download_deleted}. Use this, never browser_read_download, for any sensitive file (statements, contracts, IDs, keys, exports). Only this chat\'s own downloads (browser_list_downloads) can be saved. If the save fails at any step (the upload, the read back, a copy that does not match), the download is not deleted and stays in the browser; the error says so. To use a saved file later, vault_pipe it with attachment.',
         inputSchema: obj({ download_id: DOWNLOAD_ID, item: ITEM, new_item: NEW_ITEM, file_name: FILE_NAME }, ['download_id'], ITEM_OR_NEW),
     },
 ];
@@ -142,7 +146,9 @@ export const INSTRUCTIONS =
     'trash (on an archive-only vault, it archives it), and vault_restore brings it back (after a person unarchives it, ' +
     'on an archive-only vault). To keep a file the browser downloaded, call vault_save_download: it moves the file into ' +
     'the vault without its contents reaching you and deletes the download once the vault copy is verified. Never use ' +
-    'browser_read_download on a sensitive file.';
+    'browser_read_download on a sensitive file. vault_pipe sends any one value (a login field, a custom field, or a ' +
+    'saved file by its attachment id from vault_list attachments) into any pipe target your client may use, for ' +
+    'example a .p8 key into gh-secret: vault_pipe {id, attachment, target: "gh-secret", args: {name, repo}}.';
 
 /** A small JSON-schema check of exactly what TOOLS uses. Returns an error message or null. */
 export function checkArgs(schema, v, at = 'arguments') {
@@ -277,6 +283,17 @@ export function createVaultMcp({
         return { session_id: d.session_id, controller_port: port };
     }
 
+    // An attachment's file name for the scrub label (its id when the list does not show one).
+    async function attachmentLabel(args, signal, who) {
+        let fileName = null;
+        try {
+            const items = (await filler('list', {}, signal, who))?.items || [];
+            const a = items.find((i) => i.id === args.id)?.attachments?.find((x) => x.id === args.attachment);
+            if (typeof a?.file_name === 'string' && /^[^\s\]\[]{1,200}$/.test(a.file_name)) fileName = a.file_name;
+        } catch {}
+        return fileName || args.attachment;
+    }
+
     async function call(name, args, signal, who = chat, c = ident) {
         const tool = TOOL_BY_NAME.get(name);
         const bad = checkArgs(tool.inputSchema, args);
@@ -288,8 +305,9 @@ export function createVaultMcp({
         }
         if (action !== 'pipe') return filler(action, args, signal, who);
         const got = await filler('pipe', args, signal, who);
-        // The scrub label: the field, or the custom field's name ("[secret:token]").
-        const label = `${args.custom_field ?? args.field}`;
+        // The scrub label: the field, the custom field's name ("[secret:token]"), or
+        // the attachment's file name as vault_list shows it ("[secret:attachment:AuthKey.p8]").
+        const label = args.attachment !== undefined ? `attachment:${await attachmentLabel(args, signal, who)}` : `${args.custom_field ?? args.field}`;
         let value = typeof got?.value === 'string' ? got.value : '';
         try {
             const run = await pipe({ argv: got?.argv, value, label });

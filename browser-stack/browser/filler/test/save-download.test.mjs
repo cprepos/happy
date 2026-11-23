@@ -8,7 +8,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
-import { readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createManager } from '../lib/manage.mjs';
 import { parsePolicy } from '../lib/policy.mjs';
@@ -120,12 +121,40 @@ test('a vault copy that does not match: the download and the attachment both sta
         const bytes = Buffer.from('important contract');
         t.ctl.addDownload('sess-a', { id: 'abcdefabcdef', name: 'contract.pdf', bytes });
         t.vw.hooks.tamper = (b) => { b[b.length - 1] ^= 1; return b; };
-        await assert.rejects(t.m.save_download(t.body({ download_id: 'abcdefabcdef', item: 'gmail' })), (e) => e.status === 502 && e.outcome === 'verify_failed' && !/important contract/.test(e.message));
+        await assert.rejects(t.m.save_download(t.body({ download_id: 'abcdefabcdef', item: 'gmail' })), (e) => e.status === 502 && e.outcome === 'verify_failed' && !/important contract/.test(e.message) && /still in this chat's browser/.test(e.message));
         assert.deepEqual(t.ctl.deleted, []);
         assert.equal(t.ctl.downloadsOf('sess-a').length, 1, 'the download is kept');
         assert.equal(t.v.sync.ciphers.find((x) => x.id === t.v.items.gmail.id).attachments.length, 1, 'the attachment is kept');
         assert.equal(t.vw.calls.refusedWrites.length, 0);
         assert.match(t.auditText(), /"outcome":"verify_failed"/);
+    } finally { await t.close(); }
+});
+
+test('the vault upload fails: the download stays, no plaintext copy is written, the error says the download is still there', async () => {
+    const t = await mk();
+    try {
+        const tmp = mkdtempSync(join(tmpdir(), 'save-tmp-'));
+        const old = process.env.TMPDIR;
+        process.env.TMPDIR = tmp;
+        const seen = [];
+        const failing = { ...t.vault, addAttachment: async (id, name, bytes) => { seen.push(bytes); throw Object.assign(new Error('upload refused'), { status: 500 }); } };
+        const m = createManager({ getPolicy: () => t.policy, vault: failing, audit: t.audit, controllers: t.controllers });
+        try {
+            const bytes = Buffer.from('UPLOAD-FAIL-CANARY-contract');
+            t.ctl.addDownload('sess-a', { id: 'feedfacecafe', name: 'contract.pdf', bytes });
+            await assert.rejects(m.save_download(t.body({ download_id: 'feedfacecafe', new_item: { name: 'Contract' } })),
+                (e) => e.status === 502 && /upload refused/.test(e.message) && /not deleted: it is still in this chat's browser/.test(e.message) && /new note "Contract" \([0-9a-f-]{36}\) was created; give item/.test(e.message) && !/CANARY/.test(e.message));
+            assert.deepEqual(t.ctl.deleted, []);
+            assert.equal(t.ctl.downloadsOf('sess-a').length, 1, 'the download is kept');
+            assert.equal(seen.length, 1);
+            assert.ok(seen[0].every((x) => x === 0), 'the bytes read from the browser are zeroed');
+            assert.deepEqual(readdirSync(tmp), [], 'no temp file');
+            assert.ok(!t.auditText().includes('CANARY'));
+            // Before anything is created (an existing item): no note is mentioned.
+            await assert.rejects(m.save_download(t.body({ download_id: 'feedfacecafe', item: 'gmail' })), (e) => /still in this chat's browser/.test(e.message) && !/new note/.test(e.message));
+        } finally {
+            if (old === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = old;
+        }
     } finally { await t.close(); }
 });
 

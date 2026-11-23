@@ -322,7 +322,7 @@ filler's files or docker. Each tool is a thin client of the filler's
 | `vault_remove` | **soft delete** to the vault trash | `remove` |
 | `vault_restore` | back from the trash | `remove` |
 | `vault_compare` | `{match: true\|false}` against a sha256/sha512 (hex, optional salt prefix), bcrypt or argon2 (PHC) digest; 20 per client and login per 10 minutes | `compare` |
-| `vault_pipe` | the value on the stdin of an allowlisted command; returns its exit code and scrubbed output | `pipe: [target names]` |
+| `vault_pipe` | one value (a login field, a custom field, or a text attachment) on the stdin of any allowlisted command the client may use; returns its exit code and scrubbed output | `pipe: [target names]` |
 | `vault_save_download` | moves a file the chat's browser downloaded into the vault as an encrypted attachment (on an existing item, or on a new secure note), reads it back and compares sha256, then deletes the download; returns `{item_id, item_name, attachment_id, file_name, size, sha256, download_deleted}`, never the bytes. 100 MiB cap; 20 per client per 10 minutes; Vaultwarden only | `save_download` (a new note also needs `all_items`) |
 
 `vault_save_download` works on the calling chat's own browser only: vault-mcp
@@ -333,8 +333,13 @@ over loopback into memory, uploads it with Bitwarden's attachment v2 protocol,
 downloads and decrypts it again, and compares in constant time. Only on a
 match does it call the controller patch's `DELETE
 /happy/sessions/{sid}/downloads/{id}?sha256=`, which re-hashes the file and
-refuses if it changed. On a mismatch the download and the attachment are both
-kept. Nothing in the vault is ever deleted. `vault_list` shows secure notes
+refuses if it changed. If any step fails (reading the file, creating the
+note, the upload, the read back, a mismatch), the download is not deleted and
+the error says it is still in the browser (and, when a new note was already
+made, names it so a retry can use `item`). The file is never written
+anywhere by the filler: the only plaintext copy is the browser's own
+download, and what the vault holds is encrypted. A mismatched attachment is
+kept too. Nothing in the vault is ever deleted. `vault_list` shows secure notes
 with `kind: "note"` and any item's `attachments` (`id`, `file_name`, `size`).
 
 `vault_compare` and `vault_pipe` take exactly one of `field` (`username`,
@@ -345,6 +350,25 @@ Text, hidden and boolean custom fields have values (a boolean is `true` or
 login's custom field names; two fields with the same name are a 409
 (ambiguous). The audit records `field_kind: "custom:<name>"`, never a value,
 and the pipe's output is scrubbed to `[secret:<name>]`.
+
+`vault_pipe` also takes `attachment` instead (exactly one of the three): an
+attachment id from `vault_list`'s `attachments`, on a login or secure note the
+chat reaches, such as a `.p8` key saved with `vault_save_download`. Any value
+goes into any target the client may use; targets have no special cases for
+one kind or another. An attachment must be UTF-8 text (a PEM key, a JSON key
+file) of at most 1 MiB; it is sent byte for byte (a trailing newline kept).
+Binary files are refused (422), larger ones too (413), and a target with
+`{username}` in its argv is refused for an attachment (400), since there is
+no login. The audit records `field_kind: "attachment:<id>"`; the output is
+scrubbed to `[secret:attachment:<file name>]`. A vault without attachments
+(1Password) refuses it (422).
+
+Values never touch disk on the way: the filler reads a field or decrypts an
+attachment into memory, zeroes the attachment's Buffer once it is decoded,
+and returns the value on the loopback response; vault-mcp's pipe runner
+writes it to the child's stdin only (never argv, the environment or a temp
+file) and drops it. A target should read its secret from stdin, as
+`gh secret set` does without `--body`, so the value is never in `ps`.
 
 - New passwords are always random and generated inside the filler. An agent
   never supplies or sees one: it sets a new password on a site with
@@ -410,9 +434,29 @@ the chat id (a process without one sends `none`, served by `default_client`).
   with a target like `{"argv": ["acli", "jira", "auth", "login", "--site",
   "{arg:site}", "--email", "{username}", "--token"], "args": {"site":
   "[a-z0-9][a-z0-9-]*\\.atlassian\\.net"}}`.
-- `gh-secret` sets a GitHub Actions secret from a login's custom field:
-  `vault_pipe {id, custom_field: "Token", target: "gh-secret", args: {name: "<SECRET_NAME>", repo: "owner/repo"}}`.
-  The value goes to `gh secret set`'s stdin.
+- `gh-secret` sets a GitHub Actions secret from any value: a custom field
+  (`vault_pipe {id, custom_field: "Token", target: "gh-secret", args: {name: "<SECRET_NAME>", repo: "owner/repo"}}`),
+  a password, or a saved file such as an App Store Connect `.p8` key
+  (`vault_pipe {id, attachment: "<attachment id>", target: "gh-secret", args: {name: "ASC_KEY_P8", repo: "owner/repo"}}`).
+  The value goes to `gh secret set`'s stdin; the target has no `--body`, so
+  it is never in argv.
+- **GitHub Actions.** A workflow that needs the secret as a file (a `.p8`
+  key for `xcrun altool` or fastlane) writes it on the runner. Remove it in a
+  step that always runs, so a failed job does not leave it behind:
+
+  ```yaml
+  - name: Write the App Store Connect key
+    run: |
+      mkdir -p "$RUNNER_TEMP/keys"
+      printf '%s' "$ASC_KEY_P8" > "$RUNNER_TEMP/keys/AuthKey.p8"
+      chmod 600 "$RUNNER_TEMP/keys/AuthKey.p8"
+    env:
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+  # ... the steps that use it ...
+  - name: Remove the key
+    if: always()
+    run: rm -f "$RUNNER_TEMP/keys/AuthKey.p8"
+  ```
 - The filler only approves a pipe and hands back the argv and the value.
   The command runs in the vault tools' MCP process
   (`vault-mcp/lib/pipe.mjs`), as that chat's user (prep) with its

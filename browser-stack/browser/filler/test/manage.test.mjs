@@ -5,7 +5,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createManager } from '../lib/manage.mjs';
 import { parsePolicy } from '../lib/policy.mjs';
@@ -286,4 +287,99 @@ test('custom fields: every value read is nulled once pipe or compare is done', a
         assert.equal(recs[0].username, 'agent@jira.test', 'pipe keeps the username for argv');
         assert.equal(recs[1].username, null);
     } finally { await t0.close(); }
+});
+
+// Attachments: a file saved in the vault (save_download) piped as text, byte for byte,
+// into any target the client may use; read in memory only, the Buffer zeroed after.
+const PEM = '-----BEGIN PRIVATE KEY-----\nMIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQgPipeAttachmentCanary\n-----END PRIVATE KEY-----\n';
+async function mkAttach(opts = {}) {
+    const t0 = await setup();
+    const reads = [];
+    const vault = { ...t0.vault, readAttachment: async (...a) => { const b = await t0.vault.readAttachment(...a); reads.push(b); return b; } };
+    const p = managePolicy(t0.v);
+    p.clients.acme.manage.pipe = ['docker-login', 'sha'];
+    const policy = parsePolicy(JSON.stringify(p));
+    const m = createManager({ getPolicy: () => policy, vault, audit: t0.audit, ...opts });
+    const auditText = () => readdirSync(join(t0.dir, 'audit')).map((f) => readFileSync(join(t0.dir, 'audit', f), 'utf8')).join('');
+    const note = await t0.vault.createNote({ name: 'ASC key' });
+    const att = await t0.vault.addAttachment(note, 'AuthKey_TEST.p8', Buffer.from(PEM));
+    return { ...t0, m, policy, reads, auditText, note, att };
+}
+
+test('pipe attachment: a saved file on a note goes to any allowed target byte for byte; Buffer zeroed; audit names it', async () => {
+    const t = await mkAttach();
+    try {
+        const listed = (await t.m.list({ chat: D })).items.find((i) => i.id === t.note);
+        assert.deepEqual(listed.attachments.map((a) => a.id), [t.att]);
+        const r = await t.m.pipe({ chat: D, id: t.note, attachment: t.att, target: 'sha' });
+        assert.deepEqual(r, { target: 'sha', argv: ['sha256sum'], value: PEM }, 'exact bytes, trailing newline kept');
+        assert.equal(t.reads.length, 1);
+        assert.ok(t.reads[0].every((b) => b === 0), 'the decrypted Buffer is zeroed');
+        // A BOM and CRLF are kept as they are.
+        const crlf = await t.vault.addAttachment(t.note, 'crlf.txt', Buffer.from('﻿a\r\nb\r\n'));
+        assert.equal((await t.m.pipe({ chat: D, id: t.note, attachment: crlf, target: 'sha' })).value, '﻿a\r\nb\r\n');
+        // On a login too, and for an explicit client on its own listed login.
+        const gh = t.v.items['acme-github'].id;
+        const ghAtt = await t.vault.addAttachment(gh, 'acme.pem', Buffer.from('acme-attached-text'));
+        assert.equal((await t.m.pipe({ chat: 'chat-acme', id: gh, attachment: ghAtt, target: 'sha' })).value, 'acme-attached-text');
+        const a = t.auditText();
+        assert.ok(a.includes(`"field_kind":"attachment:${t.att}"`) && a.includes('"target":"sha"'));
+        assert.ok(!a.includes('PipeAttachmentCanary') && !a.includes('acme-attached-text'));
+        assert.ok(t.reads.every((b) => b.every((x) => x === 0)), 'every Buffer read is zeroed');
+    } finally { await t.close(); }
+});
+
+test('pipe attachment: refusals (wrong item, other client, shared, not text, too big, two sources, {username}, no attachments)', async () => {
+    const t = await mkAttach();
+    try {
+        const gh = t.v.items['acme-github'].id;
+        const ghAtt = await t.vault.addAttachment(gh, 'acme.pem', Buffer.from('acme-attached-text'));
+        // The id must be on that item.
+        await assert.rejects(t.m.pipe({ chat: D, id: t.v.items.gmail.id, attachment: t.att, target: 'sha' }), (e) => e.status === 404 && /no attachment with that id/.test(e.message));
+        // Another client's item, and a shared item, are not reached at all.
+        await assert.rejects(t.m.pipe({ chat: D, id: gh, attachment: ghAtt, target: 'sha' }), (e) => e.status === 404);
+        await assert.rejects(t.m.pipe({ chat: 'chat-acme', id: t.note, attachment: t.att, target: 'sha' }), (e) => e.status === 404);
+        await assert.rejects(t.m.pipe({ chat: D, id: t.v.items['org-shared'].id, attachment: t.att, target: 'sha' }), (e) => e.status === 404);
+        // Not UTF-8 text: 422. Over 1 MiB (decrypted, and far over at download): 413.
+        const bin = await t.vault.addAttachment(t.note, 'key.der', Buffer.from([0x30, 0x82, 0xff, 0xfe, 0x00, 0xc3]));
+        await assert.rejects(t.m.pipe({ chat: D, id: t.note, attachment: bin, target: 'sha' }), (e) => e.status === 422 && /not text/.test(e.message));
+        const big = await t.vault.addAttachment(t.note, 'big.txt', Buffer.alloc(1024 * 1024 + 1, 0x61));
+        await assert.rejects(t.m.pipe({ chat: D, id: t.note, attachment: big, target: 'sha' }), (e) => e.status === 413 && e.outcome === 'refused_size');
+        const huge = await t.vault.addAttachment(t.note, 'huge.txt', Buffer.alloc(1024 * 1024 + 64 * 1024, 0x61));
+        await assert.rejects(t.m.pipe({ chat: D, id: t.note, attachment: huge, target: 'sha' }), (e) => e.status === 413);
+        // Exactly one source; a well-formed id.
+        await assert.rejects(t.m.pipe({ chat: D, id: t.note, field: 'password', attachment: t.att, target: 'sha' }), (e) => e.status === 400 && /exactly one of field.*custom_field.*attachment/.test(e.message));
+        await assert.rejects(t.m.pipe({ chat: D, id: t.note, custom_field: 'token', attachment: t.att, target: 'sha' }), /exactly one/);
+        await assert.rejects(t.m.pipe({ chat: D, id: t.note, target: 'sha' }), /exactly one/);
+        for (const bad of ['', 'a/b', 'x'.repeat(65), 7, null]) await assert.rejects(t.m.pipe({ chat: D, id: t.note, attachment: bad, target: 'sha' }), (e) => e.status === 400, String(bad));
+        // compare does not take an attachment.
+        await assert.rejects(t.m.compare({ chat: D, id: t.note, attachment: t.att, algo: 'sha256', digest: 'ab' }), /unknown key "attachment"/);
+        // A target that needs the login's username: 400, before anything is read.
+        const before = t.reads.length;
+        await assert.rejects(t.m.pipe({ chat: 'chat-acme', id: gh, attachment: ghAtt, target: 'docker-login', args: { registry: 'ghcr.io' } }), (e) => e.status === 400 && /username/.test(e.message));
+        assert.equal(t.reads.length, before);
+        assert.ok(t.reads.every((b) => b.every((x) => x === 0)), 'every Buffer read is zeroed, refusals too');
+        // A vault with no attachments (1Password): 422.
+        const op = createManager({ getPolicy: () => t.policy, vault: { ...t.vault, capabilities: { ...t.vault.capabilities, attach: false } }, audit: t.audit });
+        await assert.rejects(op.pipe({ chat: D, id: t.v.items.gmail.id, attachment: t.att, target: 'sha' }), (e) => e.status === 422 && e.outcome === 'refused_unsupported');
+    } finally { await t.close(); }
+});
+
+test('pipe writes nothing to disk: the temp dir is unchanged after field and attachment pipes', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'pipe-tmp-'));
+    const t = await mkAttach();
+    const old = process.env.TMPDIR;
+    process.env.TMPDIR = tmp;
+    try {
+        assert.equal(tmpdir(), tmp);
+        assert.equal((await t.m.pipe({ chat: D, id: t.v.items.gmail.id, field: 'password', target: 'sha' })).value, t.v.items.gmail.password);
+        assert.equal((await t.m.pipe({ chat: D, id: t.note, attachment: t.att, target: 'sha' })).value, PEM);
+        assert.deepEqual(readdirSync(tmp), [], 'nothing in the temp dir');
+        // And no copy anywhere in the filler's own directory (audit, state).
+        const walk = (d) => readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(d, e.name)) : [readFileSync(join(d, e.name), 'latin1')]));
+        for (const blob of walk(t.dir)) assert.ok(!blob.includes('PipeAttachmentCanary') && !blob.includes(t.v.items.gmail.password), 'no value on disk');
+    } finally {
+        if (old === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = old;
+        await t.close();
+    }
 });
