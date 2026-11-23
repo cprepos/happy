@@ -113,6 +113,16 @@ final class LiveBrowserWaitBar: UIView {
             }
         }
 
+        /// What a Minimize keeps the bar folded for: this takeover (its
+        /// reason, and whether the person holds the browser) or this chat
+        /// wait. Anything new shows the whole bar again.
+        var minimizeKey: String {
+            switch self {
+            case .takeover(let reason, let held): "takeover:\(held):\(reason ?? "")"
+            case .chat(let wait): "chat:\(wait.id)"
+            }
+        }
+
         /// The button's title, if it has one.
         var action: String? {
             switch self {
@@ -138,12 +148,23 @@ final class LiveBrowserWaitBar: UIView {
 
     /// The button: Take or Release control, or Show in the chat.
     var onAction: ((Content) -> Void)?
+    /// The chevron: fold this content to the pill. Nothing is answered
+    /// or released by it.
+    var onMinimize: ((Content) -> Void)?
+    /// The pill tapped: the whole bar again.
+    var onExpand: (() -> Void)?
     private(set) var content: Content?
     var hasContent: Bool { content != nil }
+    /// Folded to a pill with only the icon (`LiveBrowserApprovalBarLayout.minimized`).
+    private(set) var minimized = false
 
     private let icon = UIImageView()
     let label = UILabel()
     let button = UIButton(configuration: .filled())
+    let minimizeButton = UIButton(configuration: .plain())
+    private lazy var expandTap = UITapGestureRecognizer(target: self, action: #selector(expandTapped))
+    /// The chevron's square at the bar's trailing edge.
+    private static let minimizeSide: CGFloat = 28
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -173,7 +194,19 @@ final class LiveBrowserWaitBar: UIView {
             guard let self, let content = self.content else { return }
             self.onAction?(content)
         }, for: .touchUpInside)
-        for view in [icon, label, button] as [UIView] { addSubview(view) }
+        minimizeButton.configuration?.image = UIImage(systemName: "chevron.down",
+                                                      withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
+        minimizeButton.configuration?.contentInsets = .zero
+        minimizeButton.tintColor = UIColor(Palette.cardTitle)
+        minimizeButton.accessibilityLabel = Strings.LiveBrowser.Wait.minimize
+        minimizeButton.accessibilityIdentifier = "live-browser-wait-minimize"
+        minimizeButton.addAction(UIAction { [weak self] _ in
+            guard let self, let content = self.content else { return }
+            self.onMinimize?(content)
+        }, for: .touchUpInside)
+        expandTap.isEnabled = false
+        addGestureRecognizer(expandTap)
+        for view in [icon, label, button, minimizeButton] as [UIView] { addSubview(view) }
         isHidden = true
         alpha = 0
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in
@@ -181,6 +214,29 @@ final class LiveBrowserWaitBar: UIView {
         }
     }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+
+    /// Folded to the pill, or the whole bar again: animated as the
+    /// approval bar's Details, by the full screen's own layout pass.
+    func setMinimized(_ on: Bool) {
+        let on = on && hasContent
+        guard on != minimized else { return }
+        minimized = on
+        render()
+        guard window != nil, let superview else { return }
+        superview.setNeedsLayout()
+        UIView.animate(withDuration: 0.2) { superview.layoutIfNeeded() }
+    }
+
+    @objc private func expandTapped() {
+        guard minimized else { return }
+        onExpand?()
+    }
+
+    override func accessibilityActivate() -> Bool {
+        guard minimized else { return super.accessibilityActivate() }
+        onExpand?()
+        return true
+    }
 
     /// What waits now, or nil once nothing does.
     func show(_ content: Content?) {
@@ -206,6 +262,19 @@ final class LiveBrowserWaitBar: UIView {
         button.configuration?.title = action
         button.isHidden = action == nil
         if case .chat? = content { button.accessibilityHint = Strings.LiveBrowser.Wait.showHint } else { button.accessibilityHint = nil }
+        if !hasContent { minimized = false }
+        label.isHidden = minimized
+        button.isHidden = action == nil || minimized
+        minimizeButton.isHidden = minimized
+        expandTap.isEnabled = minimized
+        // The pill is one element: the bar's words, and Expand.
+        isAccessibilityElement = minimized
+        accessibilityLabel = minimized ? content?.text : nil
+        accessibilityTraits = minimized ? .button : []
+        accessibilityCustomActions = minimized ? [UIAccessibilityCustomAction(name: Strings.LiveBrowser.Wait.expand) { [weak self] _ in
+            self?.onExpand?()
+            return true
+        }] : nil
         setNeedsLayout()
         superview?.setNeedsLayout()
     }
@@ -225,39 +294,50 @@ final class LiveBrowserWaitBar: UIView {
     }
 
     private var buttonWidth: CGFloat {
-        guard !button.isHidden else { return 0 }
+        guard content?.action != nil else { return 0 }
         return max(64, ceil(button.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: M.button)).width))
     }
 
     /// The text's width beside the icon and the button, on one row.
     private func textWidth(_ width: CGFloat) -> CGFloat {
         let button = buttonWidth
-        return max(0, width - 2 * M.padding - 24 - (button > 0 ? button + M.padding : 0))
+        let minimize = Self.minimizeSide + M.buttonGap
+        return max(0, width - 2 * M.padding - 24 - minimize - (button > 0 ? button + M.padding : 0))
     }
 
     /// The bar's height at `width`.
     func height(fitting width: CGFloat) -> CGFloat {
         let text = ceil(label.sizeThatFits(CGSize(width: textWidth(width), height: .greatestFiniteMagnitude)).height)
-        let row = max(20, text, button.isHidden ? 0 : M.button)
+        let row = max(20, text, buttonWidth > 0 ? M.button : 0)
         return ceil(row + 2 * M.padding)
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         let width = bounds.width
+        if minimized {
+            icon.frame = CGRect(x: (width - 18) / 2, y: bounds.height / 2 - 10, width: 18, height: 20)
+            layer.cornerRadius = min(bounds.width, bounds.height) / 2
+            layer.shadowPath = UIBezierPath(roundedRect: bounds, cornerRadius: layer.cornerRadius).cgPath
+            return
+        }
+        layer.cornerRadius = M.radius
         let text = textWidth(width)
         let textHeight = min(bounds.height - 2 * M.padding, max(20, ceil(label.sizeThatFits(CGSize(width: text, height: .greatestFiniteMagnitude)).height)))
         let mid = bounds.height / 2
         icon.frame = CGRect(x: M.padding, y: mid - 10, width: 18, height: 20)
         label.frame = CGRect(x: M.padding + 24, y: mid - textHeight / 2, width: text, height: textHeight)
+        let side = Self.minimizeSide
+        minimizeButton.frame = CGRect(x: width - M.padding - side, y: mid - side / 2, width: side, height: side)
         let buttonWidth = buttonWidth
-        button.frame = CGRect(x: width - M.padding - buttonWidth, y: mid - M.button / 2, width: buttonWidth, height: M.button)
+        button.frame = CGRect(x: minimizeButton.frame.minX - M.buttonGap - buttonWidth, y: mid - M.button / 2, width: buttonWidth, height: M.button)
         layer.shadowPath = UIBezierPath(roundedRect: bounds, cornerRadius: M.radius).cgPath
     }
 
-    /// Placed by `layout`, as tall as its content there, on top.
+    /// Placed by `layout`, as tall as its content there, on top; the
+    /// pill at the bar's bottom-trailing corner while minimized.
     func place(_ layout: LiveBrowserApprovalBarLayout) {
-        frame = layout.frame(height: height(fitting: layout.width))
+        frame = minimized ? layout.minimized : layout.frame(height: height(fitting: layout.width))
         superview?.bringSubviewToFront(self)
     }
 }

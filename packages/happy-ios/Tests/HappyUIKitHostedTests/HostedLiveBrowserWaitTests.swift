@@ -247,6 +247,171 @@ final class HostedLiveBrowserWaitTests: XCTestCase {
         throw BrowserError.timeout
     }
 
+    // MARK: Minimize
+
+    /// The full screen, on screen, its wait bar laid out.
+    private func fullScreen(_ dock: LiveBrowserDock) async throws -> (LiveBrowserFullScreenItems, UIWindow) {
+        let items = LiveBrowserFullScreenItems(dock: dock, browser: BrowserViewController(url: URL(string: "about:blank")!), noVNC: false)
+        let window = hostedKeyWindow(in: try await hostedActiveScene(), root: UINavigationController(rootViewController: items))
+        window.layoutIfNeeded()
+        return (items, window)
+    }
+
+    private func laidOut(_ items: LiveBrowserFullScreenItems) -> CGRect {
+        items.view.setNeedsLayout()
+        items.view.layoutIfNeeded()
+        return items.waitBar.frame
+    }
+
+    func testMinimizeFoldsTheBarToAPillAndThePillBringsItBack() async throws {
+        let dock = dock()
+        let (items, window) = try await fullScreen(dock)
+        defer { window.isHidden = true }
+        let bar = items.waitBar
+        items.update(LiveBrowserState(status: .takeover, reason: "Two-factor code"), held: false)
+        let full = laidOut(items)
+        XCTAssertGreaterThan(full.width, 100)
+        XCTAssertFalse(bar.minimizeButton.isHidden)
+        XCTAssertEqual(bar.minimizeButton.accessibilityLabel, S.Wait.minimize)
+        XCTAssertEqual(bar.minimizeButton.accessibilityIdentifier, "live-browser-wait-minimize")
+        XCTAssertLessThan(bar.button.frame.maxX, bar.minimizeButton.frame.minX, "beside the action, at the trailing edge")
+
+        bar.minimizeButton.sendActions(for: .touchUpInside)
+        XCTAssertTrue(bar.minimized)
+        let pill = laidOut(items)
+        XCTAssertEqual(pill.size, CGSize(width: 36, height: 36))
+        XCTAssertEqual(pill.maxX, full.maxX, accuracy: 0.5, "at the bar's trailing side")
+        XCTAssertTrue(bar.label.isHidden && bar.button.isHidden && bar.minimizeButton.isHidden, "the icon only")
+        XCTAssertFalse(bar.isHidden)
+        XCTAssertTrue(bar.isAccessibilityElement)
+        XCTAssertEqual(bar.accessibilityLabel, "The agent needs you: Two-factor code")
+        XCTAssertEqual(bar.accessibilityCustomActions?.map(\.name), [S.Wait.expand])
+        XCTAssertEqual(dock.minimizedWait, LiveBrowserWaitBar.Content.takeover(reason: "Two-factor code", held: false).minimizeKey)
+        XCTAssertEqual(bar.content, .takeover(reason: "Two-factor code", held: false), "nothing answered")
+
+        // The state read again, the same takeover: still the pill.
+        items.update(LiveBrowserState(status: .takeover, reason: "Two-factor code"), held: false)
+        XCTAssertTrue(bar.minimized)
+
+        // The pill tapped (VoiceOver's activate is the same tap).
+        XCTAssertTrue(bar.accessibilityActivate())
+        XCTAssertFalse(bar.minimized)
+        XCTAssertNil(dock.minimizedWait)
+        XCTAssertEqual(laidOut(items), full)
+        XCTAssertFalse(bar.label.isHidden)
+        XCTAssertFalse(bar.isAccessibilityElement)
+
+        // Expand from VoiceOver's action.
+        bar.minimizeButton.sendActions(for: .touchUpInside)
+        XCTAssertTrue(bar.minimized)
+        let expand = try XCTUnwrap(bar.accessibilityCustomActions?.first)
+        XCTAssertTrue(expand.actionHandler?(expand) ?? false)
+        XCTAssertFalse(bar.minimized)
+    }
+
+    func testANewTakeoverReasonOrChatWaitShowsTheWholeBar() async throws {
+        let dock = dock()
+        let (items, window) = try await fullScreen(dock)
+        defer { window.isHidden = true }
+        let bar = items.waitBar
+        items.update(LiveBrowserState(status: .takeover, reason: "Two-factor code"), held: false)
+        bar.minimizeButton.sendActions(for: .touchUpInside)
+        XCTAssertTrue(bar.minimized)
+        items.update(LiveBrowserState(status: .takeover, reason: "Pay now"), held: false)
+        XCTAssertFalse(bar.minimized, "a new reason: the whole bar")
+        XCTAssertGreaterThan(laidOut(items).width, 100)
+        // The first one back is new again too.
+        items.update(LiveBrowserState(status: .takeover, reason: "Two-factor code"), held: false)
+        XCTAssertFalse(bar.minimized)
+
+        // A chat wait, then the next one.
+        items.update(LiveBrowserState(status: .watching), held: false)
+        dock.chatWait = ChatWait(id: "r1", kind: .permission(tool: "Bash"))
+        items.showWait()
+        XCTAssertEqual(bar.content, .chat(ChatWait(id: "r1", kind: .permission(tool: "Bash"))))
+        bar.minimizeButton.sendActions(for: .touchUpInside)
+        XCTAssertTrue(bar.minimized)
+        dock.chatWait = ChatWait(id: "r2", kind: .permission(tool: "Edit"))
+        items.showWait()
+        XCTAssertFalse(bar.minimized, "a new wait: the whole bar")
+    }
+
+    /// Minimized while the person holds the browser: control stays theirs,
+    /// nothing is sent. Released, then taken again: the whole bar.
+    func testMinimizingNeverReleasesAndATakeShowsTheWholeBar() async throws {
+        let usedWebViewer = LiveBrowserViewerSetting.usesWebViewer
+        LiveBrowserViewerSetting.usesWebViewer = true
+        defer { LiveBrowserViewerSetting.usesWebViewer = usedWebViewer }
+        let daemon = BrowserDaemon()
+        let host = DockHost()
+        let client = AgentClient(transport: daemon, token: "native-secret")
+        let chat = UUID().uuidString
+        UserDefaults.standard.removeObject(forKey: "liveBrowserDock.\(chat)")
+        host.dock = LiveBrowserDock(host: host, chatKey: chat) { LiveBrowserConnection(client: client) { "work1" } }
+        let window = hostedKeyWindow(in: try await hostedActiveScene(), root: host)
+        defer { window.isHidden = true; host.dock.update(link: nil) }
+        let dock = host.dock!
+        host.view.addSubview(dock.indicator)
+        dock.setOnScreen(true)
+        dock.update(link: LiveBrowserLink(id: "3f9a1c0e5b7d42e8a6c1f09b2d4e7a35"))
+        try await eventually { dock.feed?.phase.state != nil }
+
+        dock.presentFullScreen(taking: true)
+        let navigation = try await waitFor { (host.presentedViewController as? UINavigationController).flatMap { $0.viewControllers.count == 2 ? $0 : nil } }
+        let noVNC = try XCTUnwrap(navigation.viewControllers.last as? LiveBrowserFullScreenItems)
+        try await eventually { navigation.transitionCoordinator == nil && noVNC.isViewLoaded && dock.controlTaken }
+        try await eventually { noVNC.waitBar.content == .takeover(reason: "Sign in", held: true) }
+        noVNC.waitBar.minimizeButton.sendActions(for: .touchUpInside)
+        XCTAssertTrue(noVNC.waitBar.minimized)
+        try await Task.sleep(for: .milliseconds(1500))
+        let releases = await daemon.requests.filter { $0.contains("/release ") }
+        XCTAssertEqual(releases, [], "minimizing hands nothing back")
+        XCTAssertTrue(dock.controlTaken)
+        XCTAssertTrue(dock.holdsControl)
+        XCTAssertEqual(navigation.viewControllers.count, 2, "still in noVNC")
+        XCTAssertTrue(noVNC.waitBar.minimized, "and still the pill")
+
+        // Released, then taken again: the whole bar.
+        dock.release()
+        try await eventually { navigation.viewControllers.count == 1 && navigation.transitionCoordinator == nil }
+        XCTAssertNil(dock.minimizedWait)
+        let frame = try XCTUnwrap(navigation.viewControllers.first as? LiveBrowserFullScreenItems)
+        await daemon.setLiveStatus("takeover")
+        try await eventually { frame.waitBar.content == .takeover(reason: "Sign in", held: false) }
+        frame.waitBar.minimizeButton.sendActions(for: .touchUpInside)
+        XCTAssertTrue(frame.waitBar.minimized)
+        dock.take()
+        let again = try await waitFor { navigation.viewControllers.count == 2 ? navigation.viewControllers.last as? LiveBrowserFullScreenItems : nil }
+        try await eventually { navigation.transitionCoordinator == nil && again.isViewLoaded && again.waitBar.content == .takeover(reason: "Sign in", held: true) }
+        XCTAssertFalse(again.waitBar.minimized, "a new take: the whole bar")
+        XCTAssertNil(dock.minimizedWait)
+        dock.minimize()
+        try await eventually { host.presentedViewController == nil }
+    }
+
+    private final class DockHost: UIViewController, LiveBrowserDockHosting {
+        var dock: LiveBrowserDock!
+        var liveBrowserDock: LiveBrowserDock? { dock }
+    }
+
+    private func eventually(_ condition: () async -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
+        for _ in 0..<100 {
+            if await condition() { return }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTFail("timed out", file: file, line: line)
+        throw BrowserError.timeout
+    }
+
+    private func waitFor<T>(_ value: () -> T?, file: StaticString = #filePath, line: UInt = #line) async throws -> T {
+        for _ in 0..<100 {
+            if let found = value() { return found }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTFail("timed out", file: file, line: line)
+        throw BrowserError.timeout
+    }
+
     func testTheFullScreensDismissShowsWithTheWaitBar() {
         let items = LiveBrowserFullScreenItems(dock: dock(), browser: BrowserViewController(url: URL(string: "about:blank")!), noVNC: false)
         items.loadViewIfNeeded()

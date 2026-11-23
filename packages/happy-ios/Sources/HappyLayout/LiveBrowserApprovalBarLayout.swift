@@ -81,6 +81,8 @@ public struct LiveBrowserApprovalBarLayout: Equatable, Sendable {
         public static let kindLines = 2
         /// A button is never narrower than this.
         public static let minButton: CGFloat = 76
+        /// The wait bar minimized: a round pill with only its icon.
+        public static let pill: CGFloat = 36
     }
 
     public enum Place: Equatable, Sendable {
@@ -183,6 +185,16 @@ public struct LiveBrowserApprovalBarLayout: Equatable, Sendable {
         let height = min(max(0, height), maxHeight(expanded: expanded))
         let y = mode == .belowPicture ? edge : edge - height
         return CGRect(x: x, y: y, width: width, height: height)
+    }
+
+    /// The wait bar minimized: a `Metrics.pill` square at the bar's
+    /// bottom-trailing corner, its bottom where a floating bar's is (over
+    /// `floor`, the held page's own controls, and the keyboard's key row);
+    /// under a phone's upright picture, at the bottom of the room there.
+    public var minimized: CGRect {
+        let side = min(Metrics.pill, max(0, maxHeight), max(0, width))
+        let bottom = mode == .belowPicture ? edge + maxHeight : edge
+        return CGRect(x: x + width - side, y: bottom - side, width: side, height: side)
     }
 
     /// Deny and Approve on the summary's row: a compact bar wide enough.

@@ -118,6 +118,11 @@ final class LiveBrowserDock: NSObject {
     /// The chat wait Dismiss hid: that one only, so the next shows.
     /// Nothing is answered by it.
     private var dismissedWait: String?
+    /// What the full screen's wait bar was minimized for
+    /// (`LiveBrowserWaitBar.Content.minimizeKey`): that content stays a
+    /// pill; anything new shows the whole bar. Kept in memory only, and
+    /// cleared as control is taken or handed back.
+    private(set) var minimizedWait: String?
     /// The chat's wait unless Dismiss hid it.
     var shownChatWait: ChatWait? { chatWait.flatMap { $0.id == dismissedWait ? nil : $0 } }
     /// What Dismiss acts on now: the takeover, else the chat's wait; none
@@ -991,6 +996,7 @@ final class LiveBrowserDock: NSObject {
                 defer { self.busy = false }
                 guard self.feed === feed else { return }
                 self.controlTaken = true
+                self.minimizedWait = nil
                 self.takenAt = .now
                 self.releasedOnLeave = false
                 // Left before `/take` answered: control is no good without
@@ -1149,6 +1155,7 @@ final class LiveBrowserDock: NSObject {
                 self.player?.isBusy = false
                 guard self.feed === feed else { return }
                 self.controlTaken = false
+                self.minimizedWait = nil
                 self.dropNoVNC()
                 self.refresh()
             } catch {
@@ -1257,6 +1264,27 @@ final class LiveBrowserDock: NSObject {
             dismissFullScreen(animated: true)
             DispatchQueue.main.async { [weak self] in self?.onShowWait?() }
         }
+    }
+
+    /// The wait bar's chevron: this content folds to the pill. Nothing is
+    /// answered, and control is never handed back by it.
+    func minimizeWait(_ content: LiveBrowserWaitBar.Content) {
+        minimizedWait = content.minimizeKey
+        updateFullScreen()
+    }
+
+    /// The full screen's wait bar now shows `key` (nil, nothing): a
+    /// minimize is for one content only, so it goes once the bar moves on,
+    /// and a takeover that comes back shows the whole bar.
+    func waitShown(_ key: String?) {
+        if minimizedWait != nil, key != minimizedWait { minimizedWait = nil }
+    }
+
+    /// The pill tapped: the whole bar again.
+    func expandWait() {
+        guard minimizedWait != nil else { return }
+        minimizedWait = nil
+        updateFullScreen()
     }
 
     /// Dismiss, under browser yolo's button and on the line. A takeover
@@ -1592,6 +1620,8 @@ final class LiveBrowserFullScreenItems: UIViewController {
         view.addSubview(approvalBar)
         approvalBar.onShownChange = { [weak self] in self?.showWait() }
         waitBar.onAction = { [weak self] content in self?.dock?.waitAction(content) }
+        waitBar.onMinimize = { [weak self] content in self?.dock?.minimizeWait(content); self?.showWait() }
+        waitBar.onExpand = { [weak self] in self?.dock?.expandWait(); self?.showWait() }
         view.addSubview(waitBar)
         dismissButton.addAction(UIAction { [weak self] _ in self?.dock?.dismissWait() }, for: .touchUpInside)
         dismissButton.isHidden = true
@@ -2224,7 +2254,11 @@ final class LiveBrowserFullScreenItems: UIViewController {
     /// The wait bar, unless the approval bar shows (an approval, or what
     /// browser yolo approved): the two never stack.
     func showWait() {
-        waitBar.show(LiveBrowserWaitBar.content(state: state, held: held, chatWait: dock?.shownChatWait, approvalBar: approvalBar.hasContent))
+        let content = LiveBrowserWaitBar.content(state: state, held: held, chatWait: dock?.shownChatWait, approvalBar: approvalBar.hasContent)
+        waitBar.show(content)
+        // Folded only for the content it was minimized for.
+        dock?.waitShown(content?.minimizeKey)
+        waitBar.setMinimized(content != nil && content?.minimizeKey == dock?.minimizedWait)
         showDismiss()
     }
 

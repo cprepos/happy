@@ -319,6 +319,10 @@ extension Strings {
             /// A question or a harness permission prompt: Dismiss only
             /// hides it here; it still waits in the chat.
             static let dismissChatHint = "Hides this here. It still waits for you in the chat."
+            /// The bar's chevron: it folds to a pill, nothing answered.
+            static let minimize = "Minimize"
+            /// The pill's action: the whole bar again.
+            static let expand = "Expand"
 
             /// The first non-empty line of `text`, trimmed; nil if none.
             static func line(_ text: String?) -> String? {
