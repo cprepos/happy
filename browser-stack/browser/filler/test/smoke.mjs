@@ -76,9 +76,11 @@ const fillerUrl = `http://127.0.0.1:${filler.address().port}`;
 // A leaky auto-browser: results carry everything typed so far.
 const echo = () => ctl.typed.map((t) => t.text).join(' | ');
 const UP = ['browser.observe', 'browser.eval_js', 'browser.get_html', 'browser.execute_action', 'browser.create_session', 'browser.screenshot'];
+const upCalls = [];
 const upstream = {
     listTools: async () => UP.map((name) => ({ name, description: name, inputSchema: { type: 'object', properties: {} } })),
     async callTool(name, args) {
+        upCalls.push(name);
         const s = ctl.session(args.session_id);
         const page = s ? s.pages[s.at] : null;
         if (name === 'browser.get_html') return { error: { code: -32000, message: `html of ${page?.url}: ${echo()}` } };
@@ -116,8 +118,11 @@ try {
     check(!shot.result?.content?.some((c) => c.type === 'image'), 'screenshot image withheld after a username/TOTP fill');
     const html = await call('browser_get_html', { session_id: 's1', text_only: true });
     check(/\[secret:/.test(textOf(html)), 'upstream error text scrubbed');
-    const ev = await call('browser_eval_js', { session_id: 's1', script: 'document.forms[0].password.value' });
+    const ev = await call('browser_eval_js', { session_id: 's1', script: 'document.forms[0].password.value', reason: 'Reads the password field on the sign-in page' });
     check(ev.result?.isError && /Refused/.test(textOf(ev)), 'eval_js refused on a tainted session');
+    const evsBefore = upCalls.filter((n) => n === 'browser.eval_js').length;
+    const evNoReason = await call('browser_eval_js', { session_id: 's1', script: 'document.forms[0].password.value' });
+    check(evNoReason.result?.isError && /needs a reason/.test(textOf(evNoReason)) && upCalls.filter((n) => n === 'browser.eval_js').length === evsBefore, 'eval_js without a reason refused and nothing ran');
     const raw = await call('browser_get_html', { session_id: 's1' });
     check(raw.result?.isError && /Refused/.test(textOf(raw)), 'raw HTML refused on a tainted session');
     const copy = await call('browser_execute_action', { session_id: 's1', action: { action: 'press', key: 'Control+C' } });
