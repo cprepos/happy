@@ -26,8 +26,8 @@ export function ownTools(waitMaxS = 3600) {
         name: 'browser_live_link',
         description:
             'Get the live-view link for a browser session so the user can watch the browser from their phone. ' +
-            'ALWAYS call this right after you create a browser session (browser_create_session), or the first time you ' +
-            'use one, and post the returned link in chat as a bare URL on its own line before you start browsing. ' +
+            'You do not need to call this or post the link: every browser tool result about a session already carries ' +
+            'it, and the user\'s app offers the live view from that. Call it only when the user asks for the link. ' +
             'The same session always gets the same link. It opens the live view, where the user can watch and take control.',
         inputSchema: {
             type: 'object',
@@ -174,11 +174,10 @@ export function actionOf(name, args) {
     }
 }
 
-// What the bridge appends to a few auto-browser tool descriptions, so an agent
-// that only reads those still finds the live view.
+// What the bridge appends to a few auto-browser tool descriptions. The live link needs no step of
+// the agent's: every result about a session carries it (`withLiveLink`), and the app shows it.
 const HINTS = {
-    browser_create_session: ' Each chat has one browser: when this chat already has one, this returns that session as it is, without opening start_url or applying name; use browser_observe and browser_execute_action on it instead. Then call browser_live_link with the session id and post the link in chat.',
-    browser_observe: ' If this created a new session, call browser_live_link for it and post the link in chat.',
+    browser_create_session: ' Each chat has one browser: when this chat already has one, this returns that session as it is, without opening start_url or applying name; use browser_observe and browser_execute_action on it instead. The result carries the live link; the user\'s app offers it, so there is no need to post it.',
     browser_request_human_takeover: ' Prefer browser_wait_for_human, which also shows "Needs you" on the live view and waits for the user.',
 };
 const LOCK_HINT = ' Refused while the user has control of the browser; then call browser_wait_for_human and wait.';
@@ -864,7 +863,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
             return value;
         }
         if (!l?.url) return value;
-        const text = `Live view of browser session ${sid}: ${l.url}\nIf you have not posted this link in chat yet, post it on its own line so the user can watch live.`;
+        const text = `Live view of browser session ${sid}: ${l.url}\nThe user's app offers this live view on its own; there is no need to post the link.`;
         // First, so it survives a client that cuts a long result (an observe, a page's HTML) short.
         const out = { ...value, content: [{ type: 'text', text }, ...(Array.isArray(value.content) ? value.content : [])] };
         if (value.structuredContent && typeof value.structuredContent === 'object' && !Array.isArray(value.structuredContent)) {
@@ -1102,7 +1101,8 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
                     instructions:
                         'A real Chromium browser the user can watch live from their phone. ' +
                         (upstream ? 'Drive it with the browser_* tools: browser_observe (creates a session when none is live) to get element ids, then browser_execute_action. ' : '') +
-                        'After you create a browser session, call browser_live_link and post the link in chat on its own line. ' +
+                        'Every browser result carries the session\'s live link and the user\'s app offers the live view from it, ' +
+                        'so there is no need to call browser_live_link or post the link. ' +
                         (secrets && secrets.configured() ? SECRET_INSTRUCTIONS : '') +
                         'When you need the user (' + (secrets && secrets.configured() ? 'a login no vault secret covers' : 'login') +
                         ', CAPTCHA, two-factor, payment, a confirmation), call browser_wait_for_human ' +

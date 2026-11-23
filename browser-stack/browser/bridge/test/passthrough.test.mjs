@@ -87,7 +87,9 @@ test('names: dots map to underscores; descriptions follow; own names win', () =>
     assert.doesNotMatch(m.tools[2].description, /Refused/);
     assert.equal(m.byLocal.get('browser_observe'), 'browser.observe');
     assert.match(m.tools[0].description, /use browser_observe\./);
-    assert.match(m.tools[0].description, /browser_live_link/);
+    assert.match(m.tools[0].description, /The result carries the live link/);
+    assert.doesNotMatch(m.tools[0].description, /browser_live_link/);
+    assert.doesNotMatch(m.tools[2].description, /browser_live_link/);
     assert.equal(logs.length, 2);
     for (const t of m.tools) assert.match(t.name, /^[a-zA-Z0-9_-]{1,64}$/);
 });
@@ -101,7 +103,10 @@ test('tools/list merges our tools with auto-browser\'s, sessions handled', async
     const { req } = harness();
     const init = await req(1, 'initialize', { protocolVersion: '2025-06-18' });
     assert.equal(init.result.capabilities.tools.listChanged, true);
-    assert.match(init.result.instructions, /browser_live_link/);
+    // The live link comes with every result: no browser_live_link call, nothing to post.
+    assert.match(init.result.instructions, /Every browser result carries the session's live link/);
+    assert.match(init.result.instructions, /no need to call browser_live_link or post the link/);
+    assert.doesNotMatch(init.result.instructions, /call browser_live_link and post/);
     const r = await req(2, 'tools/list', {});
     const names = r.result.tools.map((t) => t.name);
     assert.deepEqual(names, ['browser_live_link', 'browser_wait_for_human', 'browser_create_session', 'browser_list_sessions', 'browser_observe', 'browser_execute_action']);
@@ -298,7 +303,7 @@ test('results about a session carry its live link: from the argument, or the ses
         const call = async (id, name, args) => { await mcp.handle({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } }); return out.find((m) => m.id === id); };
         const seen = await call(1, 'browser_observe', { session_id: 's1' });
         assert.match(seen.result.content[0].text, /http:\/\/localhost:6090\/live\/s1-link/, 'the link comes first');
-        assert.match(seen.result.content[0].text, /post it on its own line/);
+        assert.match(seen.result.content[0].text, /no need to post the link/);
         assert.equal(seen.result.content[1].text, 'observed s1', 'then auto-browser\'s own result, unchanged');
         const listed = await call(2, 'browser_list_sessions', {});
         assert.equal(listed.result.content.length, 1, 'a list names no one session');

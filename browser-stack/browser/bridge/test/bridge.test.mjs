@@ -684,7 +684,9 @@ test('mcp: initialize and tools/list', async () => {
     const names = out[1].result.tools.map((t) => t.name);
     assert.deepEqual(names, ['browser_live_link', 'browser_wait_for_human']);
     for (const t of out[1].result.tools) assert.ok(!('client_id' in t.inputSchema.properties));
-    assert.match(out[1].result.tools[0].description, /post/i);
+    // Every result carries the link: agents are not told to fetch or post it.
+    assert.match(out[1].result.tools[0].description, /do not need to call this or post the link/);
+    assert.doesNotMatch(out[1].result.tools[0].description, /ALWAYS call this/);
 });
 
 test('mcp: browser_live_link returns the link', async () => {
