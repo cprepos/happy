@@ -6,10 +6,11 @@ extension LocalSettings {
     enum AddonKeys {
         static let voiceMessageCount = "voice-message-count"
         static let legacyLinkComputers = "relayLinkComputers"
+        static let enterToSendOff = "hardwareKeyboardEnterToSendOff"
     }
 
     /// The fork's keys that sign-out clears, alongside upstream's list.
-    static let addonKeys = [AddonKeys.voiceMessageCount, AddonKeys.legacyLinkComputers]
+    static let addonKeys = [AddonKeys.voiceMessageCount, AddonKeys.legacyLinkComputers, AddonKeys.enterToSendOff]
 
     func clearAddonKeys() {
         for key in Self.addonKeys {
@@ -40,5 +41,21 @@ extension LocalSettings {
     public var voiceMessageCount: Int {
         get { storage.string(forKey: AddonKeys.voiceMessageCount).flatMap(Int.init) ?? 0 }
         set { storage.set(String(newValue), forKey: AddonKeys.voiceMessageCount) }
+    }
+
+    /// Posted, with these settings as its object, when `enterToSend` is set.
+    public static let enterToSendDidChange = Notification.Name("LocalSettings.enterToSendDidChange")
+
+    /// Settings › Appearance › Hardware Keyboard: Enter to Send: a hardware
+    /// keyboard's Return sends, and Shift, ⌘ or Control with it makes a new
+    /// line (the default), or Return is a newline and ⌘↩ sends. This
+    /// device's own: the account's synced `agentInputEnterToSend`, which
+    /// the web writes, no longer turns it off.
+    public var enterToSend: Bool {
+        get { storage.string(forKey: AddonKeys.enterToSendOff) != "true" }
+        set {
+            storage.set(newValue ? nil : "true", forKey: AddonKeys.enterToSendOff)
+            NotificationCenter.default.post(name: Self.enterToSendDidChange, object: self)
+        }
     }
 }

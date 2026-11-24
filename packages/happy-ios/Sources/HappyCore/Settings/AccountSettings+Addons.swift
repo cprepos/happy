@@ -1,14 +1,11 @@
 import Foundation
 import HappyWire
 
-/// Our plugins' additions to the account's synced settings: Enter to
-/// send, the voice settings, and grouping by computer, kept out of
-/// AccountSettings.swift so upstream merges do not conflict there.
+/// Our plugins' additions to the account's synced settings: the voice
+/// settings and grouping by computer, kept out of AccountSettings.swift so
+/// upstream merges do not conflict there. Enter to send is the device's
+/// (`LocalSettings.enterToSend`), not the synced `agentInputEnterToSend`.
 extension AccountSettings {
-    /// A hardware keyboard's Return sends, and Shift, ⌘ or Control with it
-    /// makes a new line (`agentInputEnterToSend`; the web's Enter to send).
-    public var enterToSend: Bool { bool("agentInputEnterToSend") }
-
     /// nil follows the server's default, as does a backend this build doesn't know.
     public var voiceBackend: VoiceBackend? { string("voiceBackend").flatMap(VoiceBackend.init(rawValue:)) }
     /// The default voice preset's id; nil is the server's default voice.

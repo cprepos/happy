@@ -3,8 +3,8 @@ import HappyCore
 import UIKit
 #endif
 
-/// A hardware keyboard's Return in a chat box. With the account's Enter to
-/// send on (`agentInputEnterToSend`, the default), Return sends as the
+/// A hardware keyboard's Return in a chat box. With this device's Enter to
+/// send on (`LocalSettings.enterToSend`, the default), Return sends as the
 /// box's send button does, and Shift, ⌘ or Control with Return makes a new
 /// line. With it off, Return is a newline as on the on-screen keyboard, ⌘↩
 /// sends, and ⌃↩ is a newline too.
@@ -27,10 +27,10 @@ public enum SendShortcut {
     /// Return; the commands add their modifiers.
     public static let input = "\r"
 
-    /// The account's Enter to send, as the active account last synced it
-    /// (`AppCoordinator` follows it); on until an account says otherwise,
-    /// as `AccountSettings.defaults` has it. Read whenever a box builds its
-    /// `keyCommands`, so a change applies at once.
+    /// The shown account's Enter to send on this device
+    /// (`LocalSettings.enterToSend`; `AppCoordinator` follows it); on until
+    /// this device turns it off, whatever the synced account says. Read
+    /// whenever a box builds its `keyCommands`, so a change applies at once.
     @MainActor public static var enterToSend = true
 
     /// Runs `send` only when sending is allowed; true when it ran.

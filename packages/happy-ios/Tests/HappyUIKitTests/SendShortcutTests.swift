@@ -56,10 +56,18 @@ final class SendShortcutTests: XCTestCase {
         XCTAssertEqual(SendShortcut.input, "\r")
     }
 
+    /// On until this device turns it off; the account's synced key, which
+    /// the web writes, plays no part.
     @MainActor
-    func testEnterToSendIsOnUntilAnAccountSaysOtherwise() {
-        XCTAssertTrue(AccountSettings().enterToSend, "happy-app's default")
-        XCTAssertFalse(AccountSettings(["agentInputEnterToSend": .bool(false)]).enterToSend)
+    func testEnterToSendIsOnUntilThisDeviceTurnsItOff() {
+        let local = LocalSettings(storage: InMemoryKeyValueStore())
+        XCTAssertTrue(local.enterToSend, "on by default")
+        _ = AccountSettings(["agentInputEnterToSend": .bool(false)])
+        XCTAssertTrue(local.enterToSend, "an account's false doesn't turn it off")
+        local.enterToSend = false
+        XCTAssertFalse(local.enterToSend)
+        local.enterToSend = true
+        XCTAssertTrue(local.enterToSend)
     }
 
     #if canImport(UIKit)
@@ -100,14 +108,20 @@ final class SendShortcutTests: XCTestCase {
         XCTAssertEqual(commands.map(\.2), ["Send", nil])
     }
 
-    /// The commands follow the account's setting when not told otherwise.
+    /// The commands follow this device's setting when not told otherwise,
+    /// as `AppCoordinator` keeps `SendShortcut` with it.
     @MainActor
     func testTheCommandsFollowTheSetting() {
         let saved = SendShortcut.enterToSend
         defer { SendShortcut.enterToSend = saved }
-        SendShortcut.enterToSend = false
+        let local = LocalSettings(storage: InMemoryKeyValueStore())
+        let following = NotificationCenter.default.addObserver(forName: LocalSettings.enterToSendDidChange, object: local, queue: nil) { _ in
+            MainActor.assumeIsolated { SendShortcut.enterToSend = local.enterToSend }
+        }
+        defer { NotificationCenter.default.removeObserver(following) }
+        local.enterToSend = false
         XCTAssertNil(SendShortcut.commands(send: Self.send, newline: Self.newline).first { $0.modifierFlags.isEmpty })
-        SendShortcut.enterToSend = true
+        local.enterToSend = true
         XCTAssertNotNil(SendShortcut.commands(send: Self.send, newline: Self.newline).first { $0.modifierFlags.isEmpty })
     }
 

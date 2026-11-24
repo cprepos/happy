@@ -584,10 +584,10 @@ final class HostedSettingsUnifiedTests: XCTestCase {
     // MARK: Appearance
 
     /// Appearance's Input has the hardware keyboard's Enter to send under
-    /// Show Usage Status, on as happy-app's default is; it writes the synced
-    /// key the web reads, says what Return does now, and the chat boxes'
-    /// keys follow it.
-    func testAppearanceHasEnterToSendAndItWritesTheKey() async throws {
+    /// Show Usage Status, on by default; it writes this device's setting,
+    /// not the synced key the web reads, says what Return does now, and the
+    /// chat boxes' keys follow it.
+    func testAppearanceHasEnterToSendAndItWritesTheDevicesSetting() async throws {
         let (account, context, _) = try await rig()
         let session = try XCTUnwrap(account.session)
         let screen = SettingsAppearanceViewController(context: context, session: session)
@@ -604,17 +604,24 @@ final class HostedSettingsUnifiedTests: XCTestCase {
         let toggle = try XCTUnwrap(row.trailingView as? UISwitch)
         XCTAssertTrue(toggle.isOn, "on by default")
 
-        // The chat boxes' keys follow the store, as the app's coordinator
-        // keeps them; here the test does what it does.
+        // The chat boxes' keys follow the device's setting, as the app's
+        // coordinator keeps them; here the test does what it does.
         let saved = SendShortcut.enterToSend
         addTeardownBlock { @MainActor in SendShortcut.enterToSend = saved }
-        let following = session.store.observeSettings { SendShortcut.enterToSend = AccountSettings($0).enterToSend }
+        let local = session.localSettings
+        let following = NotificationCenter.default.addObserver(forName: LocalSettings.enterToSendDidChange, object: local, queue: .main) { _ in
+            MainActor.assumeIsolated { SendShortcut.enterToSend = local.enterToSend }
+        }
+        addTeardownBlock { NotificationCenter.default.removeObserver(following) }
+        func synced() -> Bool? { (try? session.store.settingsSnapshot()).map { AccountSettings($0).bool("agentInputEnterToSend") } }
+        let syncedBefore = synced()
 
-        func stored() -> Bool? { (try? session.store.settingsSnapshot()).map { AccountSettings($0).enterToSend } }
+        func stored() -> Bool? { local.enterToSend }
         toggle.isOn = false
         toggle.sendActions(for: .valueChanged)
         let off = try await until { stored() == false }
-        XCTAssertTrue(off, "agentInputEnterToSend is written")
+        XCTAssertTrue(off, "the device's setting is written")
+        XCTAssertEqual(synced(), syncedBefore, "agentInputEnterToSend is left alone")
         XCTAssertEqual(rows()[index].subtitle, "Enter inserts a new line; ⌘ + Enter sends")
         let boxesOff = try await until { !SendShortcut.enterToSend }
         XCTAssertTrue(boxesOff, "the boxes' Return is a newline again")

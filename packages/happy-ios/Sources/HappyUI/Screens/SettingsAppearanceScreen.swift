@@ -172,18 +172,18 @@ public final class SettingsAppearanceViewController: UIViewController {
             icon: "analytics-outline",
             tint: purple
         )
-        // The same synced key as the web's Enter to send, so one switch sets
-        // both; the composers read it as they list their keys.
-        // Its subtitle says what Return does now, so it is rebuilt at once:
-        // the store's echo matches what `set` already shows.
+        // This device's own (`LocalSettings.enterToSend`), not the web's
+        // synced Enter to send; the composers read it as they list their keys.
+        // Its subtitle says what Return does now, so it is rebuilt at once.
+        let enterToSendOn = session.localSettings.enterToSend
         let enterToSend = toggles.row(
-            "agentInputEnterToSend",
+            "hardwareKeyboardEnterToSend",
             title: Strings.SettingsFeatures.enterToSend,
-            subtitle: settings.enterToSend ? Strings.SettingsFeatures.enterToSendEnabled : Strings.SettingsFeatures.enterToSendDisabled,
+            subtitle: enterToSendOn ? Strings.SettingsFeatures.enterToSendEnabled : Strings.SettingsFeatures.enterToSendDisabled,
             icon: ItemIcon(.ionicons("return-down-forward-outline"), tint: purple),
-            isOn: settings.enterToSend
+            isOn: enterToSendOn
         ) { [weak self] on in
-            self?.set("agentInputEnterToSend", .bool(on))
+            self?.session.localSettings.enterToSend = on
             self?.rebuild()
         }
         sections.append(ItemGroupView(title: Strings.SettingsAppearance.input, footer: Strings.SettingsAppearance.inputDescription, rows: [contextSize, enterToSend]))
