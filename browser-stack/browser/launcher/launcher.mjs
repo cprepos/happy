@@ -30,6 +30,10 @@
 // raw_sha256 is the sha256 of exactly the PNG bytes the capture printed, taken here, where the
 // capture ran; the controller recomputes it before it files the image.
 //
+// ensure and stop wipe the slot's directory first. A slot that cannot be wiped (files in it someone
+// else owns) is renamed aside into data/pods/.quarantine rather than failing the op, so it never
+// keeps a new pod out of its slot; list's "quarantine" is {entries, bytes} of what sits there.
+//
 // Every reply is {"id":..,"ok":true,"result":..} or {"id":..,"ok":false,"error":".."}. Nothing
 // else is accepted: no image, mount, port, env or command comes from a caller. Image digests are
 // read from compose.browser.yml (the node's from LAUNCHER_NODE_IMAGE, which compose sets to
@@ -432,12 +436,21 @@ export function pngSize(buf) {
     return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
 }
 
-export function createLauncher(cfg, { engine, images, seccomp, secrets, captureScript = '', log = console } = {}) {
+// owns(stat, path): whether the launcher may chmod an entry, so wipe can make it removable. Its own uid
+// in production; the tests pass another test, since an unprivileged test cannot make a directory
+// someone else owns.
+export function createLauncher(cfg, { engine, images, seccomp, secrets, captureScript = '', log = console, owns = (st) => st.uid === cfg.dataUid } = {}) {
     const locks = new Map();
+    // One op at a time per key. The chain kept in locks is next with its failure swallowed (the
+    // caller gets next itself, rejection and all): a chain that could reject would be a second,
+    // unawaited copy of every failed op's error, and Node ends the process on an unhandled
+    // rejection, so one failed op (a slot that would not wipe) took the whole launcher down.
     const serial = (slot, fn) => {
         const prev = locks.get(slot) || Promise.resolve();
-        const next = prev.catch(() => {}).then(fn);
-        locks.set(slot, next.finally(() => { if (locks.get(slot) === next) locks.delete(slot); }));
+        const next = prev.then(fn);
+        const tail = next.then(() => {}, () => {});
+        locks.set(slot, tail);
+        tail.then(() => { if (locks.get(slot) === tail) locks.delete(slot); });
         return next;
     };
     // Locks on a chat's saved login (data/chats/<hash>/auth), separate from the slot locks: a
@@ -446,9 +459,31 @@ export function createLauncher(cfg, { engine, images, seccomp, secrets, captureS
     const chatLock = (hash, fn) => serial(`chat:${hash}`, fn);
     const containersFor = async (slot) => (await engine.list(cfg.project)).filter((c) => c.Labels?.['happy-browser.slot'] === String(slot));
 
+    // Empties a slot for its next pod, and never leaves it unusable. First every directory in it
+    // the launcher owns gets u+rwx back (a pod can leave a 0555 one of its own, which rmSync could
+    // not empty). What still will not go is what someone else owns: a tree staged into uploads/
+    // from outside the stack (docker cp keeps the host's uid, 1000) is "other" to the launcher,
+    // so it can neither unlink nor chmod in there. Then the slot directory itself is renamed into
+    // data/pods/.quarantine/slot-N-<UTC time>, which needs write only on data/pods and on the slot
+    // directory, both the launcher's, and the slot starts fresh. The quarantine is a trash, not a
+    // delete: list reports it, browser-perms.sh gives it back to the launcher's uid, and
+    // make browser-pods-reap QUARANTINE=1 moves it out to ~/trash. Returns the quarantine path, or null.
     const wipe = (slot) => {
         const dir = slotDir(cfg, slot);
-        if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+        if (!existsSync(dir)) return null;
+        makeRemovable(dir, owns);
+        try {
+            rmSync(dir, { recursive: true, force: true });
+            return null;
+        } catch (err) {
+            if (!['EACCES', 'EPERM', 'ENOTEMPTY'].includes(err.code)) throw err;
+            const q = quarantineDir(cfg);
+            mkdirSync(q, { recursive: true, mode: 0o700 });
+            const to = join(q, `slot-${slot}-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+            renameSync(dir, to);
+            log.warn(`launcher: slot ${slot} could not be wiped (${err.code} on ${err.path || dir}); moved it to ${to}`);
+            return to;
+        }
     };
     const freshDir = (slot) => {
         wipe(slot);
@@ -514,7 +549,7 @@ export function createLauncher(cfg, { engine, images, seccomp, secrets, captureS
                 }
                 out.push({ ...pod, ports: ports(cfg, pod.slot) });
             }
-            return { max_pods: cfg.maxPods, pods: out.sort((a, b) => a.slot - b.slot) };
+            return { max_pods: cfg.maxPods, pods: out.sort((a, b) => a.slot - b.slot), quarantine: quarantineUsage(cfg) };
         },
         async adopt_auth({ slot, chat_hash: chatHash }) {
             return serial(slot, () => chatLock(chatHash, async () => {
@@ -625,6 +660,44 @@ export function createLauncher(cfg, { engine, images, seccomp, secrets, captureS
         }
     }
     return { handle, ops };
+}
+
+export const QUARANTINE = '.quarantine';
+export const quarantineDir = (cfg) => join(cfg.podsDir, QUARANTINE);
+
+// u+rwx on every directory under (and at) path that owns() says is ours, so its entries can be
+// unlinked. Files need nothing: unlinking one takes write on its directory, not on the file.
+// What cannot be read or changed (someone else's) is left for wipe's quarantine.
+function makeRemovable(path, owns) {
+    let st;
+    try { st = lstatSync(path); } catch { return; }
+    if (!st.isDirectory()) return;
+    if (owns(st, path) && (st.mode & 0o700) !== 0o700) {
+        try { chmodSync(path, (st.mode & 0o7777) | 0o700); } catch { /* not ours after all */ }
+    }
+    let entries;
+    try { entries = readdirSync(path); } catch { return; }
+    for (const e of entries) makeRemovable(join(path, e), owns);
+}
+
+// What sits in data/pods/.quarantine: {entries, bytes}, the bytes of what can be read (a tree
+// that cannot be listed counts only as far as it can be). Normally {entries: 0, bytes: 0}.
+export function quarantineUsage(cfg) {
+    const q = quarantineDir(cfg);
+    let entries;
+    try { entries = readdirSync(q); } catch { return { entries: 0, bytes: 0 }; }
+    let bytes = 0;
+    const walk = (p) => {
+        let st;
+        try { st = lstatSync(p); } catch { return; }
+        bytes += st.isDirectory() ? 0 : st.size;
+        if (!st.isDirectory()) return;
+        let es;
+        try { es = readdirSync(p); } catch { return; }
+        for (const e of es) walk(join(p, e));
+    };
+    for (const e of entries) walk(join(q, e));
+    return { entries: entries.length, bytes };
 }
 
 function chownTree(path, uid, gid) {

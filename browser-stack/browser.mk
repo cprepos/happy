@@ -15,7 +15,8 @@
 #   make browser-bridge-restart  restart only the bridge container; lists the held links it releases on the way down
 #   make browser-pod-bench     pod start times, cold and warm (test project only)
 #   make browser-pod-smoke     per-chat pods end to end (bridge with BRIDGE_PODS=1)
-#   make browser-pods-reap     remove pods no chat is using (asks first; DRY_RUN=1 lists only, FORCE=1 removes all)
+#   make browser-pods-reap     remove pods no chat is using (asks first; DRY_RUN=1 lists only, FORCE=1 removes all;
+#                              QUARANTINE=1 instead moves the launcher's quarantine to ~/trash)
 #   make browser-node-chrome   build the browser node with Google Chrome (node-chrome/; used when BROWSER_NODE_CHROME=1)
 
 BROWSER_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))/browser
@@ -176,9 +177,14 @@ browser-pods-status:
 # removed when the bridge does not answer. Lists what it would remove and asks on a terminal;
 # without one (or DRY_RUN=1) it only lists. FORCE=1 removes every pod container, no questions.
 # Slot directories are wiped by the launcher when the slot is next used; chats' saved logins
-# (data/chats) are never touched.
+# (data/chats) are never touched. A slot tree the launcher could not wipe (files someone else owns,
+# such as a docker cp from the host) it renames into data/pods/.quarantine and reports in its list;
+# QUARANTINE=1 moves that out to ~/trash/<UTC time>_browser-quarantine/ (scripts/quarantine-reap.sh)
+# and touches no pod. Nothing here deletes it.
 browser-pods-reap:
-	@if [ "$(FORCE)" = 1 ]; then \
+	@if [ "$(QUARANTINE)" = 1 ]; then \
+		HAPPY_BROWSER_HOME="$(HAPPY_BROWSER_HOME)" bash $(BROWSER_DIR)/scripts/quarantine-reap.sh; \
+	elif [ "$(FORCE)" = 1 ]; then \
 		ids=$$(docker ps -aq $(POD_FILTER)); if [ -n "$$ids" ]; then docker rm -f $$ids; else echo "no pods"; fi; \
 	else BROWSER_BRIDGE="$(BROWSER_BRIDGE)" DRY_RUN="$(DRY_RUN)" REAP_RECENT_MIN="$(REAP_RECENT_MIN)" node $(BROWSER_DIR)/scripts/pods-reap.mjs; fi
 

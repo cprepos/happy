@@ -4,6 +4,10 @@
 # service's own uid needs, and copies each service's secret files into its own directory:
 #
 #   data/                          controller (CONTROLLER_UID) 0700, everything in it the same,
+#   data/pods/.quarantine/         controller 0700, everything in it the controller's too: slot trees
+#                                  the launcher could not wipe (someone else's files in them) and
+#                                  renamed aside; after this run make browser-pods-reap QUARANTINE=1
+#                                  can move them out
 #   data/{,pods/slot-*/}browser-profile, downloads
 #                                  controller:node 0775, their files the node's (BROWSER_NODE_UID)
 #   bridge/                        bridge (BRIDGE_UID) 0700, its files the same
@@ -37,6 +41,9 @@ mkdir -p data data/pods data/chats data/browser-profile data/downloads bridge ru
 n=$(find data \( -path data/browser-profile -o -path data/downloads -o -path 'data/pods/slot-*/browser-profile' \
   -o -path 'data/pods/slot-*/downloads' \) -prune -o \( ! -user "$C" -o ! -group "$C" \) -print -exec chown -h "$C:$C" {} + | wc -l)
 for d in data data/pods data/chats; do own "$C:$C" 700 "$d"; done
+# The find above already gave the quarantine's contents to the controller (its slot trees are not
+# pruned: their path is not data/pods/slot-*); the directory itself is the controller's alone.
+[ -d data/pods/.quarantine ] && own "$C:$C" 700 data/pods/.quarantine
 for d in data/browser-profile data/downloads data/pods/slot-*/browser-profile data/pods/slot-*/downloads; do
   [ -d "$d" ] || continue
   own "$C:$N" 775 "$d"

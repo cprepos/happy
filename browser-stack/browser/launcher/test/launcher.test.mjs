@@ -5,14 +5,14 @@ import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { connect } from 'node:net';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, statSync, readdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, statSync, readdirSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import {
     launcherConfig, composeImages, nodeSpec, controllerSpec, validate, createEngine, createLauncher, serve, ports, HARD_MAX_PODS,
-    kioskFlag, viewportHeight, demux, pngSize, CHROME_UI_HEIGHT,
+    kioskFlag, viewportHeight, demux, pngSize, CHROME_UI_HEIGHT, quarantineDir,
 } from '../launcher.mjs';
 
 const BROWSER_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -506,6 +506,99 @@ test('list removes a labeled pod whose slot directory is gone', async () => {
         assert.deepEqual(ls.result.pods, []);
         assert.deepEqual([...eng.containers.keys()], ['other']);
     } finally { await eng.close(); }
+});
+
+// A tree in a slot that the launcher cannot empty: a docker cp from the host leaves uid 1000's
+// directories in uploads/, which the launcher (1993, "other" to them) can neither unlink in nor
+// chmod. Unprivileged, the stand-in is a 0555 directory holding a file, with owns() saying it is
+// not ours, so wipe cannot give it u+w back.
+test('a slot that cannot be wiped is quarantined, and the new pod still starts', async () => {
+    const { home, cfg } = setup();
+    const eng = await fakeEngine(home);
+    const warned = [];
+    const foreign = (p) => p.includes('/uploads/staged');
+    const launcher = createLauncher(cfg, {
+        engine: createEngine(eng.socketPath), images: composeImages(COMPOSE), seccomp: SECCOMP, secrets: SECRETS,
+        log: { log() {}, warn(m) { warned.push(m); } },
+        owns: (st, p) => st.uid === cfg.dataUid && !foreign(p),
+    });
+    const slot1 = join(home, 'data/pods/slot-1');
+    const stuck = join(slot1, 'uploads/staged/ipad');
+    const quarantined = () => (existsSync(quarantineDir(cfg)) ? readdirSync(quarantineDir(cfg)) : []);
+    try {
+        assert.equal((await launcher.handle({ op: 'ensure', slot: 1, pod_id: POD, vnc_password: 'Abcd1234' })).ok, true);
+
+        // Our own 0555 directory (a pod can leave one): wiped outright, nothing quarantined.
+        const own = join(slot1, 'downloads/locked');
+        mkdirSync(own, { recursive: true });
+        writeFileSync(join(own, 'f'), 'x');
+        chmodSync(own, 0o555);
+        const e1 = await launcher.handle({ op: 'ensure', slot: 1, pod_id: 'c'.repeat(32), vnc_password: 'Abcd1234' });
+        assert.equal(e1.ok, true, e1.error);
+        assert.ok(!existsSync(own), 'our own 0555 dir is wiped');
+        assert.deepEqual(quarantined(), [], 'nothing quarantined');
+        assert.deepEqual(warned, []);
+
+        // Someone else's: the slot is renamed aside and the new pod gets a fresh one.
+        mkdirSync(stuck, { recursive: true });
+        writeFileSync(join(stuck, 'shot.png'), 'png');
+        chmodSync(stuck, 0o555);
+        const e2 = await launcher.handle({ op: 'ensure', slot: 1, pod_id: 'd'.repeat(32), vnc_password: 'Abcd1234' });
+        assert.equal(e2.ok, true, e2.error);
+        assert.equal(e2.result.existing, false);
+        assert.equal(eng.containers.size, 2);
+        assert.ok([...eng.containers.values()].every((c) => c.Labels['happy-browser.pod_id'] === 'd'.repeat(32)), 'the new pod runs');
+        assert.ok(!existsSync(join(slot1, 'uploads')), 'the slot is fresh');
+        for (const [d, mode] of [['', 0o700], ['browser-profile', 0o775], ['downloads', 0o775], ['auth', 0o700]]) {
+            const st = statSync(join(slot1, d));
+            assert.equal(st.mode & 0o7777, mode, `slot-1/${d} mode`);
+            assert.equal(st.uid, cfg.dataUid);
+            assert.equal(st.gid, d === 'browser-profile' || d === 'downloads' ? cfg.nodeGid : cfg.dataGid);
+        }
+        const q = quarantined();
+        assert.equal(q.length, 1);
+        assert.match(q[0], /^slot-1-\d{4}-\d\d-\d\dT/);
+        assert.equal(readFileSync(join(quarantineDir(cfg), q[0], 'uploads/staged/ipad/shot.png'), 'utf8'), 'png', 'kept, not deleted');
+        assert.equal(statSync(quarantineDir(cfg)).mode & 0o777, 0o700);
+        assert.equal(warned.length, 1);
+        assert.match(warned[0], /slot 1 could not be wiped/);
+
+        // list reports it; stop goes through the same path.
+        const ls = await launcher.handle({ op: 'list' });
+        assert.equal(ls.result.quarantine.entries, 1);
+        assert.ok(ls.result.quarantine.bytes >= 3);
+        mkdirSync(stuck, { recursive: true });
+        writeFileSync(join(stuck, 'shot.png'), 'png');
+        chmodSync(stuck, 0o555);
+        const st = await launcher.handle({ op: 'stop', slot: 1 });
+        assert.equal(st.ok, true, st.error);
+        assert.ok(!existsSync(slot1));
+        assert.equal(quarantined().length, 2);
+    } finally {
+        // Give the test's own tree back its u+w so the temp dir can be cleaned by the OS.
+        for (const e of quarantined()) chmodSync(join(quarantineDir(cfg), e, 'uploads/staged/ipad'), 0o755);
+        await eng.close();
+    }
+});
+
+test('a failed op answers with its error and leaves the launcher running', async () => {
+    const { home, cfg } = setup();
+    const eng = await fakeEngine(home);
+    const launcher = createLauncher(cfg, { engine: createEngine(eng.socketPath), images: composeImages(COMPOSE), seccomp: SECCOMP, secrets: SECRETS, log: { log() {}, warn() {} } });
+    let unhandled = null;
+    const onUnhandled = (err) => { unhandled = err; };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+        const r = await launcher.handle({ op: 'adopt_auth', slot: 0, chat_hash: CHAT });
+        assert.deepEqual(r, { id: null, ok: false, error: 'slot is not running' });
+        await new Promise((res) => setTimeout(res, 50));
+        assert.equal(unhandled, null, 'no unhandled rejection (Node would end the process)');
+        // The slot's lock is free again: the next op on it runs.
+        assert.equal((await launcher.handle({ op: 'ensure', slot: 0, pod_id: POD, vnc_password: 'Abcd1234' })).ok, true);
+    } finally {
+        process.off('unhandledRejection', onUnhandled);
+        await eng.close();
+    }
 });
 
 // A parent chat's saved login, as stash_auth leaves it.
