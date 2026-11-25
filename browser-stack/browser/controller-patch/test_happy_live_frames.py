@@ -1571,3 +1571,186 @@ class DownloadDeleteTests(unittest.TestCase):
         del self.manager.sessions["s1"]
         self.assertEqual(self.delete().status_code, 404)
         self.assertTrue(self.file.exists())
+
+
+class UploadStageTests(unittest.TestCase):
+    """POST /happy/sessions/{id}/uploads?name=&sha256= (browser_stage_upload)."""
+
+    TOKEN = "upload-stage-test-token-0123456789ab"
+
+    def setUp(self) -> None:
+        import hashlib
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root)
+        self.uploads = self.root / "uploads"
+        self.dir = self.uploads / "s1"
+        self.dir.mkdir(parents=True)
+        self.data = b"\x89PNG\r\n\x1a\n staged bytes"
+        self.sha = hashlib.sha256(self.data).hexdigest()
+        self.session = SimpleNamespace(id="s1", upload_dir=self.dir)
+        sessions = {"s1": self.session}
+
+        async def get_session(sid: str) -> object:
+            if sid not in sessions:
+                raise KeyError(sid)
+            return sessions[sid]
+
+        self.manager = SimpleNamespace(
+            settings=SimpleNamespace(upload_root=str(self.uploads), api_bearer_token=self.TOKEN, api_bearer_tokens=""),
+            sessions=sessions,
+            get_session=get_session,
+            audit=SimpleNamespace(append=AsyncMock()),
+        )
+        application = FastAPI()
+        hlf.install_upload_routes(application, self.manager)
+        self.client = TestClient(application)
+
+    def post(self, name: str = "shot.png", data: bytes | None = None, sha: str | None = None, token: str | None = TOKEN, sid: str = "s1"):
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/octet-stream"} if token else {}
+        return self.client.post(
+            f"/happy/sessions/{sid}/uploads", params={"name": name, "sha256": sha or self.sha},
+            content=self.data if data is None else data, headers=headers,
+        )
+
+    def test_writes_a_new_file_in_the_sessions_own_dir_and_audits_it(self) -> None:
+        r = self.post()
+        self.assertEqual(r.status_code, 200, r.text)
+        out = r.json()
+        self.assertEqual(out, {"file_path": str(self.dir.resolve() / "shot.png"), "name": "shot.png", "size": len(self.data), "sha256": self.sha})
+        self.assertEqual((self.dir / "shot.png").read_bytes(), self.data)
+        self.assertEqual(os.stat(self.dir / "shot.png").st_mode & 0o777, 0o660)
+        ev = self.manager.audit.append.await_args.kwargs
+        self.assertEqual((ev["event_type"], ev["session_id"]), ("upload_staged", "s1"))
+        self.assertEqual(ev["details"], {"name": "shot.png", "size": len(self.data), "sha256": self.sha})
+        self.assertNotIn("staged bytes", repr(ev))
+        # The same name again: a new file beside it, the first kept.
+        again = self.post().json()
+        self.assertEqual(again["name"], "shot-1.png")
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["shot-1.png", "shot.png"])
+
+    def test_a_token_is_required(self) -> None:
+        self.assertEqual(self.post(token=None).status_code, 401)
+        self.assertEqual(self.post(token="wrong-token-wrong-token-wrong").status_code, 401)
+        self.assertEqual(list(self.dir.iterdir()), [])
+
+    def test_a_bad_basename_is_refused(self) -> None:
+        for name in ("", ".env", "../x.png", "a/b.png", "x y.png", "..", "a" * 129, "é.png"):
+            r = self.post(name=name)
+            self.assertEqual((r.status_code, r.json()["code"]), (400, "bad_name"), name)
+        self.assertEqual(self.post(sha="xyz").status_code, 400)
+        self.assertEqual(list(self.dir.iterdir()), [])
+        self.assertEqual(list(self.uploads.iterdir()), [self.dir])
+
+    def test_a_dead_session_is_refused(self) -> None:
+        self.assertEqual(self.post(sid="s2").status_code, 404)
+        del self.manager.sessions["s1"]
+        self.assertEqual(self.post().status_code, 404)
+        self.assertEqual(list(self.dir.iterdir()), [])
+
+    def test_a_hash_mismatch_keeps_nothing(self) -> None:
+        r = self.post(sha="0" * 64)
+        self.assertEqual((r.status_code, r.json()["code"]), (409, "hash_mismatch"))
+        self.assertEqual(list(self.dir.iterdir()), [])
+        self.manager.audit.append.assert_not_awaited()
+
+    def test_too_large_keeps_nothing(self) -> None:
+        old = hlf.UPLOAD_MAX_BYTES
+        hlf.UPLOAD_MAX_BYTES = 8
+        self.addCleanup(setattr, hlf, "UPLOAD_MAX_BYTES", old)
+        r = self.post()
+        self.assertEqual((r.status_code, r.json()["code"]), (413, "too_large"))
+
+        async def chunks():
+            yield b"12345"
+            yield b"67890"
+
+        with self.assertRaises(hlf.UploadRefused) as cm:
+            asyncio.run(hlf.stage_upload(self.manager, "s1", "big.bin", self.sha, chunks()))
+        self.assertEqual(cm.exception.code, "too_large")
+        self.assertEqual(list(self.dir.iterdir()), [])
+
+    def test_a_symlink_in_the_target_is_never_followed(self) -> None:
+        outside = self.root / "outside.png"
+        outside.write_bytes(b"keep")
+        (self.dir / "shot.png").symlink_to(outside)
+        r = self.post()
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["name"], "shot-1.png")
+        self.assertEqual(outside.read_bytes(), b"keep")
+        self.assertTrue((self.dir / "shot.png").is_symlink())
+
+    def test_an_upload_dir_that_is_a_symlink_or_outside_is_refused(self) -> None:
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        link = self.uploads / "s1-link"
+        link.symlink_to(elsewhere)
+        self.session.upload_dir = link
+        r = self.post()
+        self.assertEqual((r.status_code, r.json()["code"]), (403, "outside"))
+        self.session.upload_dir = elsewhere
+        r = self.post()
+        self.assertEqual((r.status_code, r.json()["code"]), (403, "outside"))
+        self.session.upload_dir = self.uploads
+        self.assertEqual(self.post().status_code, 403)
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
+
+class DownloadShareTests(unittest.IsolatedAsyncioTestCase):
+    """A completed download keeps group read/write, so the host agent's ACL entry applies."""
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root)
+        self.art = self.root / "s1"
+        (self.art / "downloads").mkdir(parents=True)
+        self.session = SimpleNamespace(id="s1", artifact_dir=self.art, downloads=[])
+
+    def test_the_patch_is_applied(self) -> None:
+        from app import downloads
+
+        self.assertTrue(hasattr(downloads.DownloadCaptureService.capture, "_happy_upstream"))
+
+    def test_a_0600_download_gets_group_read_write(self) -> None:
+        f = self.art / "downloads" / "report.csv"
+        f.write_text("a,b\n")
+        os.chmod(f, 0o600)
+        hlf.share_download({"status": "completed", "path": str(f), "id": "x"}, self.session)
+        self.assertEqual(os.stat(f).st_mode & 0o777, 0o660)
+
+    def test_nothing_else_is_touched(self) -> None:
+        outside = self.root / "outside.txt"
+        outside.write_text("x")
+        os.chmod(outside, 0o600)
+        link = self.art / "downloads" / "link.txt"
+        link.symlink_to(outside)
+        failed = self.art / "downloads" / "failed.bin"
+        failed.write_text("x")
+        os.chmod(failed, 0o600)
+        for rec in ({"status": "completed", "path": str(outside)}, {"status": "completed", "path": str(link)},
+                    {"status": "failed", "path": str(failed)}, {"status": "blocked", "path": None}):
+            hlf.share_download(rec, self.session)
+        self.assertEqual(os.stat(outside).st_mode & 0o777, 0o600)
+        self.assertEqual(os.stat(failed).st_mode & 0o777, 0o600)
+
+    async def test_capture_shares_what_it_saved(self) -> None:
+        from app.downloads import DownloadCaptureService
+
+        class Download:
+            suggested_filename = "statement.pdf"
+            url = "https://bank.test/x"
+
+            async def save_as(self, path: str) -> None:
+                Path(path).write_bytes(b"pdf")
+                os.chmod(path, 0o600)
+
+            async def failure(self) -> None:
+                return None
+
+        svc = DownloadCaptureService(SimpleNamespace(append_jsonl=AsyncMock()))
+        record = await svc.capture(self.session, Download())
+        self.assertEqual(record["status"], "completed")
+        self.assertEqual(os.stat(record["path"]).st_mode & 0o777, 0o660)

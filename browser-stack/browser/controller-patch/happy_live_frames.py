@@ -45,6 +45,16 @@ of a live session from disk, from session.downloads and from downloads.jsonl, on
 hashes to the sha256 the caller verified in the vault. It always needs the bearer token, even where
 tokenless loopback is allowed.
 
+And one route for browser_stage_upload (see "a file staged for upload" below):
+POST /happy/sessions/{session_id}/uploads?name=<basename>&sha256=<hex> writes the request body, at most
+UPLOAD_MAX_BYTES, as one new file in that live session's own upload directory, checked against the
+sha256, so the upload action can then put it into a page (with the person's approval). It always needs
+the bearer token, even where tokenless loopback is allowed.
+
+And a completed download keeps group read and write (see "downloads the host agent can use" below), and
+the controller runs with umask 0007, so the host agent's ACL entry on the downloads and uploads
+directories is not cancelled by a file's mode.
+
 The share route and its token check (app/routes/share.py) are untouched; the patch refuses to load if
 that file, or any file whose behaviour it relies on, is not the 1.14.0 file it was written against.
 
@@ -95,6 +105,9 @@ EXPECTED_SHA256 = {
     "downloads.py": "fa807e5e65061f9e36f408c7f57119d4cd53cfeb51aa91fd8ce2d169630d2ff2",
     "browser/services/sessions.py": "ce85ac6d854c75abbbf3233bbceacfecfc98d1a2c9f2b88f89f474c8a610fa9c",
     "auth_policy.py": "42070495ddaabc914441e84d38553351a5e550cdd5452166ac527df8db5deef5",
+    # The upload staging route (see "a file staged for upload"): the upload action's safe_path is what
+    # accepts a file in session.upload_dir, so the path the route hands back must be one it takes.
+    "browser/services/uploads.py": "9da0572f3a3ae0bad4722aec85f7b0f78360744788d576212c2b890f07541cb1",
 }
 
 # A lockless capture: how long a poll waits on it before serving the previous frame, and the
@@ -1340,6 +1353,213 @@ def install_download_routes(application: Any, manager: Any) -> None:
     )
 
 
+# ── a file staged for upload ────────────────────────────────────────────────
+#
+# browser_stage_upload (the bridge's MCP server) reads a file on the agent's host, from the chat's own
+# working or temp directory, and the bridge sends its bytes to this pod's controller only (the chat's
+# own pod, found by chat key, never by a session id the agent names). There was no other way in for a
+# file: upstream 1.14.0 has no multipart route, and agents were copying files into the controller's
+# /data/uploads with docker, as root, which the launcher then could not wipe.
+# POST /happy/sessions/{session_id}/uploads?name=<basename>&sha256=<hex>, body the raw bytes:
+#
+# - needs a bearer credential the controller knows, checked here as well as by the middleware (401);
+# - acts only on a live session (manager.sessions; get_session's owner check applies; 404 otherwise);
+# - takes the name as a plain basename only ([A-Za-z0-9._-], at most 128, no leading dot; 400
+#   otherwise), and makes it unique in the directory (name-1.ext, name-2.ext, ...), never replacing a file;
+# - writes into session.upload_dir only, which must be a real directory (not a symlink) inside
+#   UPLOAD_ROOT (403 otherwise), through a descriptor of that directory and O_CREAT|O_EXCL|O_NOFOLLOW,
+#   so nothing already there, a symlink included, is ever followed or overwritten; owned by the
+#   controller's own user (1993), so the launcher can always wipe the slot, and mode 660: the uploads
+#   directory's default ACL (browser-perms.sh, the launcher) gives the host agent (uid prep) its own
+#   rwx entry, and an ACL entry counts only through the mask, which is a new file's group bits, so a
+#   0600 file would shut the agent out of a file staged for it;
+# - stops at UPLOAD_MAX_BYTES (413) and checks the bytes against sha256 (409); either way the partial
+#   file is removed and nothing is kept;
+# - records an upload_staged audit event with the name, size and sha256 (never the content), and
+#   answers {file_path, name, size, sha256}: file_path is what the upload action takes.
+#
+# Pinned with the rest (EXPECTED_SHA256): browser/services/uploads.py, browser/services/sessions.py,
+# auth_policy.py.
+
+UPLOAD_MAX_BYTES = 50 * 1024 * 1024
+UPLOAD_NAME = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$")
+UPLOAD_UNIQUE_TRIES = 100
+
+
+class UploadRefused(Exception):
+    def __init__(self, status: int, code: str, detail: str) -> None:
+        super().__init__(detail)
+        self.status, self.code, self.detail = status, code, detail
+
+
+def _upload_dir(manager: Any, session: Any) -> Path:
+    """The session's own upload directory: a real directory inside UPLOAD_ROOT, else refused."""
+    import stat as stat_module
+
+    raw = Path(str(session.upload_dir))
+    try:
+        st = os.lstat(raw)
+    except OSError:
+        raise UploadRefused(404, "no_upload_dir", "this session has no upload directory") from None
+    if not stat_module.S_ISDIR(st.st_mode):
+        logger.warning("refusing to stage an upload: the session's upload directory is not a directory")
+        raise UploadRefused(403, "outside", "the session's upload directory is not a plain directory")
+    resolved = raw.resolve()
+    root = Path(os.path.realpath(manager.settings.upload_root))
+    if resolved != raw.absolute() or not resolved.is_relative_to(root) or resolved == root:
+        logger.warning("refusing to stage an upload: the session's upload directory is not its own under UPLOAD_ROOT")
+        raise UploadRefused(403, "outside", "the session's upload directory is not inside the upload root")
+    return resolved
+
+
+def _unique_names(name: str):
+    stem, dot, ext = name.partition(".") if not name.startswith(".") else (name, "", "")
+    yield name
+    for n in range(1, UPLOAD_UNIQUE_TRIES):
+        yield f"{stem}-{n}{dot}{ext}"
+
+
+def _open_new(dir_fd: int, name: str) -> tuple[int, str]:
+    """A new file in the directory, never an existing one or a symlink: (fd, the name it got)."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    for candidate in _unique_names(name):
+        if len(candidate) > 128:
+            break
+        try:
+            fd = os.open(candidate, flags, 0o660, dir_fd=dir_fd)
+            # Without a default ACL on the directory the umask applies: put the group bits back.
+            os.fchmod(fd, 0o660)
+            return fd, candidate
+        except FileExistsError:
+            continue
+    raise UploadRefused(409, "name_taken", "too many files with that name in the upload directory; rename it")
+
+
+async def stage_upload(manager: Any, session_id: str, name: str, sha256: str, chunks: Any) -> dict[str, Any]:
+    if not isinstance(name, str) or not UPLOAD_NAME.match(name) or name in (".", ".."):
+        raise UploadRefused(400, "bad_name", "name must be a plain file name: A-Z a-z 0-9 . _ -, no leading dot, at most 128")
+    if not _SHA256_HEX.match(sha256 or ""):
+        raise UploadRefused(400, "bad_request", "sha256 must be 64 lower-case hex characters")
+    try:
+        session = await manager.get_session(session_id)
+    except KeyError:
+        raise UploadRefused(404, "not_found", "no such live session") from None
+    if manager.sessions.get(session_id) is not session:
+        raise UploadRefused(404, "not_found", "no such live session")
+    directory = _upload_dir(manager, session)
+    dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+    fd = None
+    final = None
+    try:
+        fd, final = _open_new(dir_fd, name)
+        h = hashlib.sha256()
+        size = 0
+        async for chunk in chunks:
+            if not chunk:
+                continue
+            size += len(chunk)
+            if size > UPLOAD_MAX_BYTES:
+                raise UploadRefused(413, "too_large", f"a staged file may be at most {UPLOAD_MAX_BYTES} bytes")
+            h.update(chunk)
+            view = memoryview(chunk)
+            while view:
+                view = view[os.write(fd, view):]
+        if not secrets.compare_digest(h.hexdigest(), sha256):
+            raise UploadRefused(409, "hash_mismatch", "the bytes received do not match that sha256; nothing was kept")
+        os.fsync(fd)
+        os.close(fd)
+        fd = None
+    except BaseException:
+        if fd is not None:
+            os.close(fd)
+        if final is not None:
+            try:
+                os.unlink(final, dir_fd=dir_fd)
+            except OSError:
+                pass
+        raise
+    finally:
+        os.close(dir_fd)
+    try:
+        await manager.audit.append(
+            event_type="upload_staged",
+            status="ok",
+            action="stage_upload",
+            session_id=session_id,
+            details={"name": final, "size": size, "sha256": sha256},
+        )
+    except Exception as exc:
+        logger.warning("staged upload: audit failed: %s", type(exc).__name__)
+    return {"file_path": str(directory / final), "name": final, "size": size, "sha256": sha256}
+
+
+def install_upload_routes(application: Any, manager: Any) -> None:
+    """POST /happy/sessions/{session_id}/uploads?name=&sha256= (see above)."""
+    from fastapi import Request
+    from fastapi.responses import JSONResponse
+
+    from app.auth_policy import credentials_for, match_credential
+
+    async def upload(session_id: str, request: Request) -> Any:
+        if match_credential(credentials_for(manager.settings), request.headers.get("authorization", "")) is None:
+            return JSONResponse(status_code=401, content={"detail": "a bearer token is required", "code": "unauthorized"})
+        declared = request.headers.get("content-length")
+        if declared is not None and (not declared.isdigit() or int(declared) > UPLOAD_MAX_BYTES):
+            return JSONResponse(
+                status_code=413, content={"detail": f"a staged file may be at most {UPLOAD_MAX_BYTES} bytes", "code": "too_large"}
+            )
+        try:
+            return await stage_upload(
+                manager, session_id, request.query_params.get("name", ""), request.query_params.get("sha256", ""), request.stream()
+            )
+        except UploadRefused as exc:
+            return JSONResponse(status_code=exc.status, content={"detail": exc.detail, "code": exc.code})
+
+    upload.__annotations__["request"] = Request
+    application.add_api_route("/happy/sessions/{session_id}/uploads", upload, methods=["POST"], include_in_schema=False)
+
+
+# ── downloads the host agent can use ─────────────────────────────────────────
+#
+# A completed download (DownloadCaptureService.capture: the file it reserves and Playwright's save_as
+# fills) is the host agent's to use directly at its host path, through the downloads directory's
+# default ACL. That entry counts only through the ACL mask, which is the file's group bits, so a file
+# that lands without group read and write (a save that creates it 0600) gets g+rw back here, and
+# nothing else: other bits, owner and contents are left as they are. Only a regular file (never a
+# symlink) inside the session's own artifacts/<session>/downloads is touched. Pinned: downloads.py.
+
+DOWNLOAD_GROUP_BITS = 0o060
+
+
+def share_download(record: Any, session: Any) -> None:
+    import stat as stat_module
+
+    if not isinstance(record, dict) or record.get("status") != "completed" or not record.get("path"):
+        return
+    path = Path(str(record["path"]))
+    try:
+        st = os.lstat(path)
+        downloads_dir = (Path(str(session.artifact_dir)) / "downloads").resolve()
+        if not stat_module.S_ISREG(st.st_mode) or path.resolve().parent != downloads_dir:
+            return
+        if st.st_mode & DOWNLOAD_GROUP_BITS != DOWNLOAD_GROUP_BITS:
+            os.chmod(path, stat_module.S_IMODE(st.st_mode) | DOWNLOAD_GROUP_BITS, follow_symlinks=False)
+    except (OSError, NotImplementedError) as exc:
+        logger.warning("download %s: could not give it group read/write: %s", record.get("id"), type(exc).__name__)
+
+
+def build_downloads(downloads_module: Any) -> dict[str, Any]:
+    upstream_capture = downloads_module.DownloadCaptureService.capture
+
+    async def capture(self: Any, session: Any, download: Any) -> dict[str, Any]:
+        record = await upstream_capture(self, session, download)
+        share_download(record, session)
+        return record
+
+    capture._happy_upstream = upstream_capture  # type: ignore[attr-defined]
+    return {"capture": capture}
+
+
 def install_routes(application: Any, manager: Any) -> None:
     """GET /happy/sessions/{session_id}/focus and the screen routes, behind the controller's own auth middleware."""
     if getattr(application.state, "happy_focus_route", False):
@@ -1363,6 +1583,7 @@ def install_routes(application: Any, manager: Any) -> None:
     application.add_api_route("/happy/sessions/{session_id}/focus", focus, methods=["GET"], include_in_schema=False)
     install_screen_routes(application, manager)
     install_download_routes(application, manager)
+    install_upload_routes(application, manager)
     application.state.happy_focus_route = True
 
 
@@ -1896,6 +2117,10 @@ def apply() -> None:
         setattr(browser_manager.BrowserManager, name, fn)
     for name, fn in diagnostics_patches.items():
         setattr(diagnostics.BrowserDiagnosticsService, name, fn)
+    from app import downloads
+
+    for name, fn in build_downloads(downloads).items():
+        setattr(downloads.DownloadCaptureService, name, fn)
     logger.warning(
         "happy_live_frames: patched auto-browser %s share_snapshot/light_snapshot, scroll and new tabs; screenshot audit in %s, default view %s",
         EXPECTED_VERSION,
@@ -1905,6 +2130,9 @@ def apply() -> None:
 
 
 if os.environ.get("HAPPY_LIVE_FRAMES_NO_AUTOLOAD") != "1":
+    # Files the controller makes (downloads, staged uploads, artifacts) keep group read/write, so the
+    # ACL mask leaves the host agent's entry in force (see "downloads the host agent can use").
+    os.umask(0o007)
     verify()
     apply()
     from app.main import app, manager  # noqa: E402 - what uvicorn serves
