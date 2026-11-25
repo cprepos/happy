@@ -114,8 +114,8 @@ test('meta mode: a call without a chat (or a malformed one) is refused and reach
         assert.equal(r.result.isError, true);
         assert.match(r.result.content[0].text, /could not be matched to its chat/);
     }
-    for (const name of ['browser_live_link', 'browser_wait_for_human']) {
-        const r = await h.call(name, { session_id: 'pod0' });
+    for (const [name, args] of [['browser_live_link', { session_id: 'pod0' }], ['browser_wait_for_human', { session_id: 'pod0' }], ['browser_stage_upload', { paths: ['/etc/hostname'], reason: 'r' }]]) {
+        const r = await h.call(name, args);
         assert.equal(r.result.isError, true);
     }
     assert.deepEqual(h.podBodies(), []);

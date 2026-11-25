@@ -7,12 +7,14 @@
 // 600 file here and sent only to 127.0.0.1:8010. It never holds the VNC password.
 import { createHash, randomBytes } from 'node:crypto';
 import { appendFileSync, realpathSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { createInterface } from 'node:readline';
 import { loadConfig, readSecret } from './lib/config.mjs';
 import { createUpstreamMcp, localToolName } from './lib/upstream.mjs';
 import { createSecretGate, SECRET_TOOL_NAMES } from './lib/secrets.mjs';
 import { REASON_TOOLS, REASON_MAX_INPUT, CODE_MAX, REASON_REFUSED } from './lib/approval.mjs';
+import { readStageFiles, StageRefused, FILE_MAX, CALL_MAX, PATHS_MAX } from './lib/stage.mjs';
 import { createAgentChatLookup } from '../../identity/agentchat.mjs';
 import { chatFromMeta, chatOfMeta, fillerChatOf, withoutChatMeta } from '../../identity/chatmeta.mjs';
 
@@ -66,6 +68,26 @@ export function ownTools(waitMaxS = 3600) {
             additionalProperties: false,
         },
     },
+    {
+        name: 'browser_stage_upload',
+        description:
+            'Put files from this computer into this chat\'s browser, so a page can upload them. Give each file\'s path; ' +
+            'only files in this chat\'s working directory or the temp directory, not hidden (no part starting with "."), not ' +
+            `in a secrets or credentials directory, not symlinks, at most ${FILE_MAX / 1048576} MiB each and ${CALL_MAX / 1048576} MiB in all, up to ${PATHS_MAX} per call. ` +
+            'Returns each file\'s file_path (in the browser: pass it to the upload action, browser_execute_action ' +
+            '{action: "upload", element_id, file_path}, which asks the user to approve), its host_path (where it lies on ' +
+            'this computer; you may delete it there once the page has it), size and sha256. Never copy files into the ' +
+            'browser with docker. Do not stage a password, key or other secret file.',
+        inputSchema: {
+            type: 'object',
+            properties: {
+                paths: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: PATHS_MAX, description: 'The files to stage, absolute or relative to the working directory.' },
+                reason: { type: 'string', description: 'What the files are and which page they are for, e.g. "the signed lease PDF for the landlord portal\'s document upload".' },
+            },
+            required: ['paths', 'reason'],
+            additionalProperties: false,
+        },
+    },
     ];
 }
 export const TOOLS = ownTools();
@@ -78,6 +100,15 @@ export const SECRET_INSTRUCTIONS =
     'before filling. Call browser_wait_for_human for a sign-in only when no login matches the host, the fill is refused ' +
     '(tell the user what the refusal said, e.g. which URI to add to the vault item), a CAPTCHA appears, or a second ' +
     'factor comes up that is not a stored TOTP (a phone prompt, an SMS code). Never ask the user to type a password in chat. ';
+// Added to the server instructions for a chat on this computer with the browser tools (not
+// behind the LAN gateway: its files and downloads are another computer's).
+export const FILE_INSTRUCTIONS =
+    'Files: to upload a file from this computer into a page, call browser_stage_upload with its path (and a ' +
+    'reason), then the upload action with the file_path it returns; never copy files into the browser with docker. ' +
+    'A staged file can be deleted at its host_path once the page has it. Downloads: browser_list_downloads gives ' +
+    'each one\'s host_path, where you can use it directly (Read, Bash, or move or copy it into the working ' +
+    'directory). A sensitive download (a statement, an ID, a key, anything with personal or account data) goes to ' +
+    'the vault with vault_save_download, never Read.';
 const OWN_NAMES = new Set([...TOOLS.map((t) => t.name), ...SECRET_TOOL_NAMES]);
 
 const HELD = new Set(['user', 'takeover']);
@@ -517,7 +548,7 @@ export function linkRewriter(linkFrom, linkBase) {
     return walk;
 }
 
-export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fetch, pollS = 60, upstream = null, waitMaxS = 3600, approvalWaitS = null, log = () => {}, retryMs = 30_000, metaProbe = null, secrets = null, chatPods = null, callChat = null, chatFromMeta: fromMeta = false, now = Date.now, linkFrom = null, linkBase = null }) {
+export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fetch, pollS = 60, upstream = null, waitMaxS = 3600, approvalWaitS = null, log = () => {}, retryMs = 30_000, metaProbe = null, secrets = null, chatPods = null, callChat = null, chatFromMeta: fromMeta = false, now = Date.now, linkFrom = null, linkBase = null, stageRoots = null, podsHome = null }) {
     // fromMeta: every call names its chat in _meta (the LAN gateway's client); nothing else does.
     if (fromMeta) { callChat = metaCallChat(); if (chatPods) chatPods = { ...chatPods, chat: null }; }
     const relink = linkRewriter(linkFrom, linkBase);
@@ -761,6 +792,7 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
             }
             if (via?.recovered && out && Array.isArray(out.content)) out = { ...out, content: [{ type: 'text', text: recoveredNote(via) }, ...out.content] };
             if (sharedPageNote && out && !out.isError && Array.isArray(out.content)) out = { ...out, content: [{ type: 'text', text: SHARED_PAGE_NOTE }, ...out.content] };
+            if (name === 'browser_list_downloads') out = withHostPaths(out, via);
             return result(id, await scrubOut(gate, await withLiveLink(name, args, out, signal, via), signal));
         } catch (err) {
             if (!signal.aborted) return result(id, toolResult(`Error: ${err.message}`, true));
@@ -994,6 +1026,96 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
         return { status: 'done', link: t.url, ...(state.reason === 'session_closed' ? { note: 'the browser session closed' } : {}) };
     }
 
+    // ── Files between this computer and the chat's browser ───────────────
+    // A pod's /data is <podsHome>/data/pods/slot-<n> on this computer (the launcher's bind mount),
+    // where the host agent's ACL entries (launcher, browser-perms.sh, the controller patch) let it
+    // use the session's downloads and uploads directly. host_path: a path the pod's controller gave
+    // for this chat's own session, as it lies here; null for anything else.
+    function hostPathOf(via, p) {
+        if (!podsHome || !via || !Number.isInteger(via.slot) || !via.session_id || typeof p !== 'string') return null;
+        const sid = via.session_id;
+        const dirs = [`/data/uploads/${sid}/`, `/data/artifacts/${sid}/downloads/`];
+        const dir = dirs.find((d) => p.startsWith(d));
+        const rest = dir ? p.slice(dir.length) : '';
+        if (!rest || rest.includes('/') || rest.startsWith('.') || rest.includes('\0')) return null;
+        return `${String(podsHome).replace(/\/+$/, '')}/data/pods/slot-${via.slot}${p.slice('/data'.length)}`;
+    }
+    // browser_list_downloads with the chat's own pod: each download its host_path too.
+    function withHostPaths(out, via) {
+        if (!via || fromMeta || !podsHome || !out || out.isError) return out;
+        let added = 0;
+        const walk = (v) => {
+            if (Array.isArray(v)) return v.map(walk);
+            if (v && typeof v === 'object') {
+                const o = Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+                const hp = hostPathOf(via, v.path);
+                if (hp && !('host_path' in o)) { o.host_path = hp; added++; }
+                return o;
+            }
+            return v;
+        };
+        const next = { ...out };
+        if (out.structuredContent && typeof out.structuredContent === 'object') next.structuredContent = walk(out.structuredContent);
+        if (Array.isArray(out.content)) {
+            next.content = out.content.map((c) => {
+                if (c?.type !== 'text' || typeof c.text !== 'string' || !/^\s*[[{]/.test(c.text)) return c;
+                try { return { ...c, text: JSON.stringify(walk(JSON.parse(c.text))) }; } catch { return c; }
+            });
+        }
+        return added ? next : out;
+    }
+
+    // browser_stage_upload: files read here (lib/stage.mjs: the chat's cwd or the temp directory,
+    // nothing hidden or secret, regular files, size limits) and sent through the bridge to this
+    // chat's own pod only: the pod router.route resolves for the call's chat, never a session id
+    // from the arguments (the tool takes none). Refused behind the LAN gateway (the files would be
+    // this computer's, not the caller's) and without pods (the shared browser is every chat's).
+    async function stageUpload(args, signal, cc = null) {
+        const extra = Object.keys(args || {}).filter((k) => k !== 'paths' && k !== 'reason');
+        if (extra.length) throw new Error(`browser_stage_upload takes only paths and reason (not ${extra.join(', ')}); it always stages into this chat's own browser`);
+        const reason = typeof args?.reason === 'string' ? args.reason.trim() : '';
+        if (!reason) throw new Error('nothing was staged: give a reason (what the files are and which page they are for), then call it again');
+        if (reason.length > REASON_MAX_INPUT) throw new Error(`nothing was staged: reason may be at most ${REASON_MAX_INPUT} characters`);
+        if (fromMeta) throw new Error('browser_stage_upload is not available through the LAN gateway: it reads files on the browser\'s computer, not yours. Nothing was staged.');
+        if (!router || router.legacy) throw new Error('browser_stage_upload needs per-chat browsers (pods), which this browser stack has off. Nothing was staged.');
+        // Only a chat's own process (or a call whose chat the client named): never one picked by a session id.
+        if (!cc && !router.chatKey) throw new Error('this call could not be matched to its chat, so nothing was staged.');
+        let files;
+        try {
+            files = readStageFiles(args.paths, { roots: stageRoots ? stageRoots() : [process.cwd(), tmpdir()] });
+        } catch (err) {
+            if (err instanceof StageRefused) throw new Error(`nothing was staged: ${err.message}`);
+            throw err;
+        }
+        const via = await router.route('browser_live_link', {}, signal, { chat: cc, check: true });
+        if (!via || via.none) throw new Error('browser_stage_upload needs per-chat browsers (pods), which this browser stack has off. Nothing was staged.');
+        if (await endedByUser({}, signal, via)) throw new Error(USER_ENDED);
+        const staged = [];
+        for (const f of files) {
+            const q = new URLSearchParams({ chat_key: via.key, name: f.name, sha256: f.sha256 });
+            const res = await fetchImpl(`${bridgeUrl}/api/pod/upload?${q}`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${bridgeToken}`, 'Content-Type': 'application/octet-stream' },
+                body: f.data,
+                signal,
+            });
+            let data = null;
+            try { data = await res.json(); } catch {}
+            if (!res.ok) {
+                const done = staged.length ? ` (${staged.map((x) => x.name).join(', ')} staged before it)` : '';
+                throw new Error(`${f.path} was not staged: ${data?.error || `HTTP ${res.status}`}${done}`);
+            }
+            if (data?.session_id !== via.session_id || data?.sha256 !== f.sha256) throw new Error(`${f.path}: the browser answered for another session or file; stop and tell the user`);
+            staged.push({ path: f.path, file_path: data.file_path, host_path: hostPathOf({ ...via, slot: data.slot }, data.file_path), name: data.name, size: data.size, sha256: data.sha256 });
+        }
+        return {
+            session_id: via.session_id,
+            files: staged,
+            ...(via.recovered ? { note: recoveredNote(via) } : {}),
+            next: 'Upload with browser_execute_action {action: "upload", element_id (or selector), file_path} for each file; the user is asked to approve. A staged file can be deleted at its host_path afterwards.',
+        };
+    }
+
     // ── Approvals ─────────────────────────────────────────────────────────
     // auto-browser answers a risky action (account settings, posting, payment, deleting) with
     // {status: approval_required, approval_id}. The bridge shows it to the user in the live view
@@ -1117,7 +1239,8 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
                         'words a person can approve without reading the script: what it clicks, changes or reads, on which ' +
                         'page, naming any button, field or value it changes, e.g. ' + REASON_EXAMPLE + '. Not "run a ' +
                         'script" or "check the page". It is the headline of the approval the user sees; a script without ' +
-                        'one is refused and nothing runs.',
+                        'one is refused and nothing runs.' +
+                        (fromMeta || !upstream ? '' : ' ' + FILE_INSTRUCTIONS),
                 });
             }
             case 'ping':
@@ -1137,13 +1260,14 @@ export function createMcpServer({ bridgeUrl, bridgeToken, write, fetchImpl = fet
                 try {
                     // Behind the gateway every call names its chat; one that doesn't goes nowhere.
                     const cc = fromMeta ? await callChat(params?._meta)
-                        : name === 'browser_live_link' || name === 'browser_wait_for_human' || (upstream && !(secrets && secrets.isOwn(name)))
+                        : name === 'browser_live_link' || name === 'browser_wait_for_human' || name === 'browser_stage_upload' || (upstream && !(secrets && secrets.isOwn(name)))
                             ? await chatOfCall(params?._meta, ac.signal, { name, args: params?.arguments ?? {} }) : null;
                     if (cc?.unknown && fromMeta) return result(id, toolResult(`Error: ${NO_CHAT}`, true));
                     const meta = withoutChatMeta(params?._meta);
                     let out;
                     if (name === 'browser_live_link') out = await liveLink(args, ac.signal, cc);
                     else if (name === 'browser_wait_for_human') out = await waitForHuman(args, ac.signal, progress, cc);
+                    else if (name === 'browser_stage_upload') out = await stageUpload(args, ac.signal, cc);
                     else if (secrets && secrets.isOwn(name)) {
                         // A fill or login types into the page: not into a browser that was just restarted.
                         if (router && (name === 'browser_fill_secret' || name === 'browser_login')) {
@@ -1226,6 +1350,10 @@ if (isMain) {
         callChat: fromMeta ? null : agentCallChat(ident, process.env, log),
         chatFromMeta: fromMeta,
         waitMaxS: cfg.waitMaxS,
+        // browser_stage_upload reads from the chat's working directory and the temp directory, and
+        // host paths are under the stack's home.
+        stageRoots: () => [process.cwd(), tmpdir()],
+        podsHome: cfg.home,
         log,
         metaProbe: createMetaProbe(),
         secrets: createSecretGate({

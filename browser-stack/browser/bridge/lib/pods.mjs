@@ -109,10 +109,12 @@ export function createPodClient({ baseUrl, token, fetchImpl = fetch, timeoutMs =
     async function call(method, path, body, t = timeoutMs) {
         let res;
         try {
+            // A Buffer goes as raw bytes (the staged upload), anything else as JSON.
+            const raw = Buffer.isBuffer(body);
             res = await fetchImpl(base + path, {
                 method,
-                headers: body === undefined ? headers : { ...headers, 'Content-Type': 'application/json' },
-                body: body === undefined ? undefined : JSON.stringify(body),
+                headers: body === undefined ? headers : { ...headers, 'Content-Type': raw ? 'application/octet-stream' : 'application/json' },
+                body: body === undefined ? undefined : raw ? body : JSON.stringify(body),
                 signal: AbortSignal.timeout(t),
             });
         } catch (err) {
@@ -175,6 +177,11 @@ export function createPodClient({ baseUrl, token, fetchImpl = fetch, timeoutMs =
         // browser_screenshot scope "page" with redact false: the viewport, filed unscrubbed.
         pageShot: (sid, { label, redact = true }) =>
             call('POST', `/happy/sessions/${encodeURIComponent(sid)}/page-shot`, { label, redact }, 90_000),
+        // browser_stage_upload: the bytes as one new file in the session's own upload directory,
+        // checked there against sha256 -> {file_path, name, size, sha256} (controller-patch, "a file
+        // staged for upload"). The name may come back changed (made unique), never an existing file.
+        stageUpload: (sid, { name, sha256, data }) =>
+            call('POST', `/happy/sessions/${encodeURIComponent(sid)}/uploads?name=${encodeURIComponent(name)}&sha256=${encodeURIComponent(sha256)}`, data, 120_000),
         // How many of the session's approvals still wait for a decision (none on an error).
         async pendingApprovals(sid) {
             const list = await call('GET', `/approvals?status=pending&session_id=${encodeURIComponent(sid)}`, undefined, 5000);
@@ -996,6 +1003,33 @@ export function createPodManager({
         }
     }
 
+    /**
+     * browser_stage_upload: a file's bytes into the chat's own session's upload directory, through
+     * that pod's controller only. The chat is found by its key and nothing else (no session id from
+     * the caller); never starts or wakes a pod. -> {file_path, name, size, sha256, session_id, slot}.
+     * A file_path outside /data/uploads/<that session>/ is never passed on.
+     */
+    async function stageUpload(chatKey, { name, sha256, data }) {
+        if (!CHAT_KEY.test(chatKey || '')) throw new PodError('bad chat_key', 400, 'bad_request');
+        if (!Buffer.isBuffer(data)) throw new PodError('no file bytes', 400, 'bad_request');
+        if (!chats.has(chatKey)) throw new PodError('this chat has no browser', 404, 'unknown_chat');
+        const p = podOf(chatKey);
+        if (!p || !p.sessionId) throw new PodError('this chat\'s browser is asleep', 503, 'asleep');
+        let out;
+        try {
+            out = await p.client.stageUpload(p.sessionId, { name, sha256, data });
+        } catch (err) {
+            if (err.status === 404 && /Not Found/.test(err.message)) throw tooOld('upload staging');
+            if (err.detail && [400, 403, 404, 409, 413].includes(err.status)) throw new PodError(`upload refused: ${err.detail}`, err.status, err.code);
+            throw err;
+        }
+        const dir = `/data/uploads/${p.sessionId}/`;
+        if (typeof out?.file_path !== 'string' || !out.file_path.startsWith(dir) || out.file_path.slice(dir.length).includes('/') || out.sha256 !== sha256) {
+            throw new PodError('the controller answered with a file outside this session\'s upload directory, or another sha256', 502, 'pod_error');
+        }
+        return { file_path: out.file_path, name: out.name, size: out.size, sha256: out.sha256, session_id: p.sessionId, slot: p.slot };
+    }
+
     async function screenShot(chatKey, { activate = true, label = 'manual', redact = true, view = null } = {}) {
         if (!CHAT_KEY.test(chatKey || '')) throw new PodError('bad chat_key', 400, 'bad_request');
         for (let attempt = 0; ; attempt++) {
@@ -1086,7 +1120,7 @@ export function createPodManager({
 
     return {
         ensure, stopChat, checkpointAuth, idleSweep, healthCheck, reconcile, refill, start, close,
-        chatForLink, chatForSession, podOf, peek, podState, touchViewer, wake, status, hold, screen, screenShot, pageShot,
+        chatForLink, chatForSession, podOf, peek, podState, touchViewer, wake, status, hold, screen, screenShot, pageShot, stageUpload,
         liveness, sessionSeen, phantomSweep,
         get timings() { return timings.slice(); },
         _pods: pods, _chats: chats,

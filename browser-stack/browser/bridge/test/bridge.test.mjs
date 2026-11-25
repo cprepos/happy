@@ -682,7 +682,7 @@ test('mcp: initialize and tools/list', async () => {
     await server.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
     assert.equal(out[0].result.protocolVersion, '2025-03-26');
     const names = out[1].result.tools.map((t) => t.name);
-    assert.deepEqual(names, ['browser_live_link', 'browser_wait_for_human']);
+    assert.deepEqual(names, ['browser_live_link', 'browser_wait_for_human', 'browser_stage_upload']);
     for (const t of out[1].result.tools) assert.ok(!('client_id' in t.inputSchema.properties));
     // Every result carries the link: agents are not told to fetch or post it.
     assert.match(out[1].result.tools[0].description, /do not need to call this or post the link/);

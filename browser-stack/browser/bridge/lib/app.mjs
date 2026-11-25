@@ -87,6 +87,12 @@
 //                       is drawn on it. 400 bad view; 503 asleep (never wakes it)
 //   POST /api/page-shot {chat_key, label?, redact?} -> the same fields: that chat's session's page
 //                       (viewport), for browser_screenshot scope "page" with redact false
+//   POST /api/pod/upload?chat_key=&name=&sha256= (body: the file's raw bytes, at most
+//                       UPLOAD_MAX_BODY; not JSON, so not under MAX_BODY) -> {file_path, name, size,
+//                       sha256, session_id, slot}: browser_stage_upload's file, re-hashed here (400
+//                       on a mismatch) and sent to that chat's own pod's controller only, which writes
+//                       it into the session's upload directory. By chat_key only, never a session id;
+//                       404 unknown_chat, 503 asleep (never wakes it), 413 too large
 //   POST /api/tools     {}                          -> {tools}: auto-browser's tool list, cached, so
 //                       listing tools never starts a pod
 //   GET  /api/pods                                  -> slots, chats, recent start timings
@@ -119,6 +125,10 @@ const VNC_REQ_HEADERS = ['accept', 'accept-encoding', 'accept-language', 'if-non
 const VNC_RES_HEADERS = ['content-type', 'content-length', 'content-encoding', 'etag', 'last-modified'];
 const WS_RES_HEADERS = new Set(['upgrade', 'connection', 'sec-websocket-accept', 'sec-websocket-protocol']);
 const MAX_BODY = 16 * 1024;
+// /api/pod/upload's own limit: one staged file, the controller's UPLOAD_MAX_BYTES (controller-patch).
+export const UPLOAD_MAX_BODY = 50 * 1024 * 1024;
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+const UPLOAD_NAME = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/;
 const MAX_WAIT_S = 120;
 
 // A client address as the allowlist spells it: an IPv4-mapped IPv6 address is its IPv4.
@@ -639,6 +649,61 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         });
     }
 
+    // /api/pod/upload's body: raw bytes, stopped (413, the request destroyed) past the limit, and
+    // refused up front when its declared length is already past it.
+    function readRaw(req, limit) {
+        return new Promise((resolve, reject) => {
+            const declared = req.headers['content-length'];
+            if (declared !== undefined && (!/^\d+$/.test(declared) || Number(declared) > limit)) {
+                reject(Object.assign(new Error('file too large'), { status: 413 }));
+                return;
+            }
+            let size = 0;
+            let over = false;
+            const chunks = [];
+            req.on('data', (c) => {
+                if (over) return;
+                size += c.length;
+                if (size > limit) { over = true; reject(Object.assign(new Error('file too large'), { status: 413 })); req.pause(); return; }
+                chunks.push(c);
+            });
+            req.on('end', () => { if (!over) resolve(Buffer.concat(chunks)); });
+            req.on('error', reject);
+        });
+    }
+
+    // browser_stage_upload's file, to the chat's own pod. The query names the chat (its key, which
+    // the MCP server derives from the chat it runs for, never from a tool argument), the file name
+    // and its sha256; the body is the bytes. The bridge hashes them itself before anything goes on.
+    async function podUpload(req, res, query) {
+        if (!pods) { req.resume(); return send(res, 409, { error: 'pods_disabled' }); }
+        const chatKey = query.get('chat_key') || '';
+        const name = query.get('name') || '';
+        const sha256 = query.get('sha256') || '';
+        const bad = !CHAT_KEY.test(chatKey) ? 'chat_key must be 32 hex chars'
+            : !UPLOAD_NAME.test(name) ? 'name must be a plain file name: A-Z a-z 0-9 . _ -, no leading dot, at most 128'
+                : !SHA256_HEX.test(sha256) ? 'sha256 must be 64 lower-case hex characters' : null;
+        if (bad) { req.resume(); return send(res, 400, { error: bad }); }
+        // Refused before reading any bytes: no chat, or no running pod for it.
+        const state = pods.podState(chatKey);
+        if (state === 'none') { req.resume(); return send(res, 404, { error: 'this chat has no browser', code: 'unknown_chat' }); }
+        if (!pods.podOf(chatKey)?.sessionId) { req.resume(); return send(res, 503, { error: 'this chat\'s browser is asleep', code: 'asleep' }); }
+        let data;
+        try {
+            data = await readRaw(req, UPLOAD_MAX_BODY);
+        } catch (err) {
+            // Answered and the connection closed, so the rest of a too-large body is never read.
+            return send(res, err.status || 400, { error: err.message, ...(err.status === 413 ? { code: 'too_large' } : {}) }, { Connection: 'close' });
+        }
+        if (createHash('sha256').update(data).digest('hex') !== sha256) return send(res, 400, { error: 'the bytes received do not match that sha256', code: 'hash_mismatch' });
+        try {
+            return send(res, 200, await pods.stageUpload(chatKey, { name, sha256, data }));
+        } catch (err) {
+            const status = err.status && err.status >= 400 && err.status < 600 ? err.status : 503;
+            return send(res, status, { error: err.message, ...(err.code ? { code: err.code } : {}) });
+        }
+    }
+
     const sessionIdOf = (body) => {
         const sid = body?.session_id;
         if (typeof sid !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(sid)) {
@@ -666,6 +731,8 @@ export function createBridge({ client, store, config, now = Date.now, log = () =
         if (!presented || !sameSecret(presented, bridgeToken)) return send(res, 401, { error: 'unauthorized' });
         if (path === '/api/pods' && req.method === 'GET') return send(res, 200, pods ? { pods: true, ...pods.status() } : { pods: false });
         if (req.method !== 'POST') return send(res, 405, { error: 'method_not_allowed' });
+        // Its own body limit and no JSON: before readJson and its MAX_BODY.
+        if (path === '/api/pod/upload') return podUpload(req, res, new URL(req.url, 'http://bridge.invalid').searchParams);
         const body = await readJson(req);
         if (path.startsWith('/api/pod') || path === '/api/tools' || path === '/api/screen' || path === '/api/page-shot') return podApi(res, path, body);
 

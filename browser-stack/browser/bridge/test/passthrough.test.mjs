@@ -109,8 +109,8 @@ test('tools/list merges our tools with auto-browser\'s, sessions handled', async
     assert.doesNotMatch(init.result.instructions, /call browser_live_link and post/);
     const r = await req(2, 'tools/list', {});
     const names = r.result.tools.map((t) => t.name);
-    assert.deepEqual(names, ['browser_live_link', 'browser_wait_for_human', 'browser_create_session', 'browser_list_sessions', 'browser_observe', 'browser_execute_action']);
-    assert.deepEqual(r.result.tools[3].annotations, { readOnlyHint: true });
+    assert.deepEqual(names, ['browser_live_link', 'browser_wait_for_human', 'browser_stage_upload', 'browser_create_session', 'browser_list_sessions', 'browser_observe', 'browser_execute_action']);
+    assert.deepEqual(r.result.tools[4].annotations, { readOnlyHint: true });
     assert.match(r.result.tools[1].inputSchema.properties.timeout_s.description, /max 570/);
     // initialize, then notifications/initialized with the new session id, then tools/list on it.
     const sid = `sess-${mock.n}`;
@@ -124,7 +124,7 @@ test('tools/list follows nextCursor', async () => {
     mock.page2 = true;
     const { req } = harness();
     const r = await req(1, 'tools/list', {});
-    assert.equal(r.result.tools.length, 6);
+    assert.equal(r.result.tools.length, 7);
 });
 
 test('tools/call forwards under the original name and returns the result verbatim (JSON)', async () => {
@@ -172,7 +172,7 @@ test('auto-browser down: own tools still listed, calls get a clear tool error, n
     await new Promise((r) => dead.close(r));
     const { req, call, logs } = harness({ to: `http://127.0.0.1:${port}/mcp` });
     const list = await req(1, 'tools/list', {});
-    assert.deepEqual(list.result.tools.map((t) => t.name), ['browser_live_link', 'browser_wait_for_human']);
+    assert.deepEqual(list.result.tools.map((t) => t.name), ['browser_live_link', 'browser_wait_for_human', 'browser_stage_upload']);
     const r = await call(2, 'browser_list_sessions', {});
     assert.equal(r.result.isError, true);
     assert.match(r.result.content[0].text, /not reachable/);
@@ -195,7 +195,7 @@ test('a known tool whose call fails mid-flight gets a tool error', async () => {
 test('a rejected token is reported without echoing it', async () => {
     const { req, call } = harness({ token: 'wrong-token-123456' });
     const list = await req(1, 'tools/list', {});
-    assert.equal(list.result.tools.length, 2);
+    assert.equal(list.result.tools.length, 3);
     const r = await call(2, 'browser_list_sessions', {});
     assert.equal(r.result.isError, true);
     assert.ok(!JSON.stringify(r).includes('wrong-token-123456'));
@@ -209,12 +209,12 @@ test('when auto-browser comes back, the client is told the tool list changed', a
     const mcp = createMcpServer({ bridgeUrl: 'http://127.0.0.1:9', bridgeToken: 'b', write: (m) => out.push(m), upstream, retryMs: 50 });
     await mcp.handle({ jsonrpc: '2.0', method: 'notifications/initialized' });
     await mcp.handle({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
-    assert.equal(out[0].result.tools.length, 2);
+    assert.equal(out[0].result.tools.length, 3);
     up = true;
     await new Promise((r) => setTimeout(r, 200));
     assert.ok(out.some((m) => m.method === 'notifications/tools/list_changed'));
     await mcp.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
-    assert.equal(out.find((m) => m.id === 2).result.tools.length, 6);
+    assert.equal(out.find((m) => m.id === 2).result.tools.length, 7);
 });
 
 test('without pass-through, an unknown tool is a JSON-RPC error as before', async () => {
