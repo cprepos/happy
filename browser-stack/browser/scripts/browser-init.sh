@@ -72,12 +72,13 @@ chmod 600 "$SECRETS/happy-agent.env"
 # with only CHOWN, DAC_OVERRIDE and FOWNER, no network: HAPPY_BROWSER_HOME is the operator's own
 # tree, so this hands parts of it to the services' uids and nothing else.
 HERE="$(cd "$(dirname "$0")" && pwd)"
-PERMS_IMAGE="node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914"
+# The image: node:22-alpine plus setfacl (acl-tools/Dockerfile, built by make browser-init).
+PERMS_IMAGE="${BROWSER_ACL_IMAGE:?run through make browser-init}"
 docker run --rm --network none --read-only --security-opt no-new-privileges:true -u 0:0 \
   --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
   -e CONTROLLER_UID="${CONTROLLER_UID:-1993}" -e BROWSER_NODE_UID="${BROWSER_NODE_UID:-1994}" \
   -e BRIDGE_UID="${BRIDGE_UID:-1992}" -e DOCKER_PROXY_UID="${DOCKER_PROXY_UID:-1995}" \
-  -e LAUNCHER_SOCKET_GID="${LAUNCHER_SOCKET_GID:-1996}" \
+  -e LAUNCHER_SOCKET_GID="${LAUNCHER_SOCKET_GID:-1996}" -e HOST_AGENT_UID="${HOST_AGENT_UID:-$(id -u)}" \
   -v "$ROOT:/h" -v "$HERE/browser-perms.sh:/browser-perms.sh:ro" --entrypoint sh "$PERMS_IMAGE" /browser-perms.sh
 
 if ((${#made[@]})); then

@@ -23,7 +23,7 @@ function setup({ launcher = {}, proxy = {} } = {}) {
     const me = { uid: process.getuid(), gid: process.getgid() };
     const lcfg = launcherConfig({
         LAUNCHER_BROWSER_DIR: BROWSER_DIR, LAUNCHER_HOME: home, LAUNCHER_PROJECT: 'hbtest',
-        POD_DATA_UID: String(me.uid), POD_DATA_GID: String(me.gid), POD_NODE_UID: String(me.uid + 1), POD_NODE_GID: String(me.gid),
+        POD_DATA_UID: String(me.uid), POD_DATA_GID: String(me.gid), POD_NODE_UID: String(me.uid + 1), POD_NODE_GID: String(me.gid), HOST_AGENT_UID: String(me.uid + 2),
         ...launcher,
     });
     const pcfg = proxyConfig({

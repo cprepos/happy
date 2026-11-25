@@ -9,7 +9,19 @@
 #                                  renamed aside; after this run make browser-pods-reap QUARANTINE=1
 #                                  can move them out
 #   data/{,pods/slot-*/}browser-profile, downloads
-#                                  controller:node 0775, their files the node's (BROWSER_NODE_UID)
+#                                  controller:node 0770, their files the node's (BROWSER_NODE_UID)
+#   ACL entries for the host agent (HOST_AGENT_UID, prep), which uses its chats' downloads and
+#   staged uploads straight on the host (the launcher sets the same on every fresh slot, the
+#   controller patch on each session's artifacts/<sid>/downloads):
+#     data, data/pods, data/pods/slot-*, {data,slot-*}/artifacts, {data,slot-*}/artifacts/*
+#                                  u:A:--x, traverse only: never a listing or a read of the rest
+#     {data,slot-*}/uploads, {data,slot-*}/downloads, {data,slot-*}/artifacts/*/downloads
+#                                  u:A:rwX on them and all they hold, and default entries (rwx for
+#                                  A, the controller and on downloads the node; mask rwx; nothing
+#                                  for other) so what lands there later is the same
+#   Nothing in data is left to "other" where A can reach it: the entries right under data, data/pods
+#   and each slot lose their "other" bits, so browser-profile, auth, chats, .quarantine and the
+#   controller's own directories stay shut to A. The known limit: entries are per uid, not per chat.
 #   bridge/                        bridge (BRIDGE_UID) 0700, its files the same
 #   run/                           controller:LAUNCHER_SOCKET_GID 0750 (the launcher's socket)
 #   run-docker/                    docker-proxy (DOCKER_PROXY_UID) 0750 (the proxy's socket)
@@ -21,11 +33,15 @@
 # that differ are changed, so a second run changes nothing.
 set -eu -o pipefail
 
-: "${CONTROLLER_UID:?}" "${BROWSER_NODE_UID:?}" "${BRIDGE_UID:?}" "${DOCKER_PROXY_UID:?}" "${LAUNCHER_SOCKET_GID:?}"
-for v in "$CONTROLLER_UID" "$BROWSER_NODE_UID" "$BRIDGE_UID" "$DOCKER_PROXY_UID" "$LAUNCHER_SOCKET_GID"; do
+: "${CONTROLLER_UID:?}" "${BROWSER_NODE_UID:?}" "${BRIDGE_UID:?}" "${DOCKER_PROXY_UID:?}" "${LAUNCHER_SOCKET_GID:?}" "${HOST_AGENT_UID:?}"
+for v in "$CONTROLLER_UID" "$BROWSER_NODE_UID" "$BRIDGE_UID" "$DOCKER_PROXY_UID" "$LAUNCHER_SOCKET_GID" "$HOST_AGENT_UID"; do
   case "$v" in '' | *[!0-9]* | 0) echo "browser-perms: uids must be numbers other than 0" >&2; exit 1 ;; esac
 done
-C="$CONTROLLER_UID" N="$BROWSER_NODE_UID" B="$BRIDGE_UID" P="$DOCKER_PROXY_UID" S="$LAUNCHER_SOCKET_GID"
+for v in "$CONTROLLER_UID" "$BROWSER_NODE_UID" "$BRIDGE_UID" "$DOCKER_PROXY_UID"; do
+  [ "$v" != "$HOST_AGENT_UID" ] || { echo "browser-perms: HOST_AGENT_UID must not be a service's uid" >&2; exit 1; }
+done
+command -v setfacl >/dev/null && command -v getfacl >/dev/null || { echo "browser-perms: needs setfacl (the acl-tools image)" >&2; exit 1; }
+C="$CONTROLLER_UID" N="$BROWSER_NODE_UID" B="$BRIDGE_UID" P="$DOCKER_PROXY_UID" S="$LAUNCHER_SOCKET_GID" A="$HOST_AGENT_UID"
 H=/h
 cd "$H"
 
@@ -40,14 +56,48 @@ mkdir -p data data/pods data/chats data/browser-profile data/downloads bridge ru
 # data/: the controller's, except the node's two directories (shared stack and every slot).
 n=$(find data \( -path data/browser-profile -o -path data/downloads -o -path 'data/pods/slot-*/browser-profile' \
   -o -path 'data/pods/slot-*/downloads' \) -prune -o \( ! -user "$C" -o ! -group "$C" \) -print -exec chown -h "$C:$C" {} + | wc -l)
-for d in data data/pods data/chats; do own "$C:$C" 700 "$d"; done
+# data and data/pods show 0710: their group bits are the ACL mask, --x for the host agent's entry.
+for d in data data/pods; do own "$C:$C" 710 "$d"; done
+own "$C:$C" 700 data/chats
 # The find above already gave the quarantine's contents to the controller (its slot trees are not
 # pruned: their path is not data/pods/slot-*); the directory itself is the controller's alone.
 [ -d data/pods/.quarantine ] && own "$C:$C" 700 data/pods/.quarantine
 for d in data/browser-profile data/downloads data/pods/slot-*/browser-profile data/pods/slot-*/downloads; do
   [ -d "$d" ] || continue
-  own "$C:$N" 775 "$d"
+  own "$C:$N" 770 "$d"
   n=$((n + $(find "$d" -mindepth 1 \( ! -user "$N" -o ! -group "$N" \) -print -exec chown -h "$N:$N" {} + | wc -l)))
+done
+
+# The host agent's ACL entries (the header). acl <-R|-> <spec> <path>: set only when getfacl
+# shows a change, so a second run counts none.
+acl() {
+  [ -e "$3" ] && [ ! -L "$3" ] || return 0
+  if [ "$1" = -R ]; then before=$(getfacl -Rcpn "$3"); setfacl -R -m "$2" "$3"; after=$(getfacl -Rcpn "$3")
+  else before=$(getfacl -cpn "$3"); setfacl -m "$2" "$3"; after=$(getfacl -cpn "$3"); fi
+  [ "$before" = "$after" ] || n=$((n + 1))
+}
+for s in data data/pods/slot-*; do
+  [ -d "$s" ] || continue
+  for d in "$s/uploads" "$s/artifacts"; do
+    [ -d "$d" ] || { mkdir "$d"; chmod 770 "$d"; }
+    [ "$(stat -c %u:%g "$d")" = "$C:$C" ] || chown -h "$C:$C" "$d"
+  done
+done
+# Traverse only, and nothing right under each for "other" (A gets in here; nothing else should).
+for p in data data/pods data/pods/slot-* data/artifacts data/artifacts/* data/pods/slot-*/artifacts data/pods/slot-*/artifacts/*; do
+  [ -d "$p" ] && [ ! -L "$p" ] || continue
+  n=$((n + $(find "$p" -mindepth 1 -maxdepth 1 ! -type l -perm /o=rwx -print -exec chmod o-rwx {} + | wc -l)))
+  acl - "u:$A:--x" "$p"
+done
+share="d:u::rwx,d:u:$A:rwx,d:u:$C:rwx,d:g::rwx,d:m::rwx,d:o::---"
+for s in data data/pods/slot-*; do
+  [ -d "$s" ] || continue
+  for a in "$s"/artifacts/*/downloads; do
+    [ -d "$a" ] && [ ! -L "$a" ] && [ ! -L "${a%/downloads}" ] || continue
+    acl -R "u:$A:rwX,u:$C:rwX,o::---,$share" "$a"
+  done
+  acl -R "u:$A:rwX,o::---,$share" "$s/uploads"
+  acl -R "u:$A:rwX,u:$N:rwX,o::---,$share,d:u:$N:rwx" "$s/downloads"
 done
 
 # bridge/: the bridge's stores.
@@ -75,4 +125,4 @@ copy() {
 copy "$B" secrets-bridge api-token vnc-password bridge-token filler-client-token
 copy "$C" secrets-launcher api-token auth-state-key share-token-secret
 
-echo "browser-perms: $n owner or secret change(s)"
+echo "browser-perms: $n owner, mode, ACL or secret change(s)"

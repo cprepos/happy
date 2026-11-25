@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
 os.environ.setdefault("HAPPY_LIVE_FRAMES_NO_AUTOLOAD", "1")
@@ -1697,6 +1698,77 @@ class UploadStageTests(unittest.TestCase):
         self.session.upload_dir = self.uploads
         self.assertEqual(self.post().status_code, 403)
         self.assertEqual(list(elsewhere.iterdir()), [])
+
+
+def parse_acl(raw: bytes) -> list[tuple[int, int, int]]:
+    import struct as st
+
+    assert st.unpack_from("<I", raw)[0] == 2
+    return [st.unpack_from("<HHI", raw, 4 + 8 * i) for i in range((len(raw) - 4) // 8)]
+
+
+class SessionDirShareTests(unittest.TestCase):
+    """Each session's artifacts/<sid> is traverse-only for the host agent, its downloads full use."""
+
+    AGENT = 4242
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root)
+        patcher = mock.patch.dict(os.environ, {hlf.HOST_AGENT_ENV: str(self.AGENT)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.chmod(self.root, 0o770)
+
+    def test_the_patch_is_applied(self) -> None:
+        from app import artifacts
+
+        self.assertTrue(hasattr(artifacts.SessionArtifactService.prepare_session_dir, "_happy_upstream"))
+
+    def test_xattr_layout(self) -> None:
+        raw = hlf.acl_xattr(7, {9: 1, 3: 7}, 5, 7, 0)
+        self.assertEqual(parse_acl(raw), [(1, 7, 0xFFFFFFFF), (2, 7, 3), (2, 1, 9), (4, 5, 0xFFFFFFFF), (0x10, 7, 0xFFFFFFFF), (0x20, 0, 0xFFFFFFFF)])
+
+    def test_prepare_names_the_host_agent(self) -> None:
+        from app.artifacts import SessionArtifactService
+
+        old = os.umask(0o007)
+        try:
+            art = SessionArtifactService(self.root).prepare_session_dir("s1")
+            (art / "downloads" / "f.pdf").write_bytes(b"%PDF")
+            (art / "shot.png").write_bytes(b"png")
+        finally:
+            os.umask(old)
+        users = lambda p, name="system.posix_acl_access": {e[2]: e[1] for e in parse_acl(os.getxattr(p, name)) if e[0] == 2}
+        self.assertEqual(users(art), {self.AGENT: 1}, "traverse only on artifacts/<sid>")
+        with self.assertRaises(OSError):
+            os.getxattr(art, "system.posix_acl_default")
+        self.assertEqual(users(art / "downloads")[self.AGENT], 7)
+        self.assertEqual(users(art / "downloads", "system.posix_acl_default"), {self.AGENT: 7, os.getuid(): 7})
+        other = [e for e in parse_acl(os.getxattr(art / "downloads", "system.posix_acl_default")) if e[0] == 0x20]
+        self.assertEqual(other, [(0x20, 0, 0xFFFFFFFF)])
+        # A saved download inherits the entry; the screenshot beside it gets none.
+        self.assertEqual(users(art / "downloads" / "f.pdf")[self.AGENT], 7)
+        with self.assertRaises(OSError):
+            os.getxattr(art / "shot.png", "system.posix_acl_access")
+        self.assertEqual(os.stat(art / "shot.png").st_mode & 0o007, 0)
+
+    def test_no_agent_names_nobody(self) -> None:
+        from app.artifacts import SessionArtifactService
+
+        for value in ("", "0", "abc", str(os.getuid())):
+            with mock.patch.dict(os.environ, {hlf.HOST_AGENT_ENV: value}):
+                art = SessionArtifactService(self.root).prepare_session_dir(f"n{value or 'x'}")
+                with self.assertRaises(OSError):
+                    os.getxattr(art, "system.posix_acl_access")
+
+    def test_a_symlinked_dir_is_left_alone(self) -> None:
+        target = self.root / "elsewhere"
+        target.mkdir()
+        (self.root / "s2").symlink_to(target)
+        hlf.share_session_dir(self.root / "s2")
+        with self.assertRaises(OSError):
+            os.getxattr(target, "system.posix_acl_access")
 
 
 class DownloadShareTests(unittest.IsolatedAsyncioTestCase):

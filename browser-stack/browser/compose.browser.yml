@@ -165,6 +165,8 @@ services:
       SESSION_STORE_ROOT: /data/sessions
       MEMORY_ROOT: /data/memory
       CLI_HOME: /data/cli-home
+      # The host agent's uid: the patch names it on each session's artifacts/<sid>/downloads.
+      HOST_AGENT_UID: ${HOST_AGENT_UID:-1000}
       # Saved logins (storage state) are written Fernet-encrypted, and an
       # unencrypted one is refused.
       AUTH_STATE_ENCRYPTION_KEY: ${AUTH_STATE_ENCRYPTION_KEY:?run make browser-init}
@@ -316,7 +318,9 @@ services:
   # socket) and the launcher socket's. The repo and data/pods, data/chats are mounted at their
   # host paths, because the bind sources it hands Docker are host paths.
   launcher:
-    image: node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
+    # node:22-alpine plus setfacl (acl-tools/Dockerfile), by its local image id; never pulled.
+    image: ${BROWSER_ACL_IMAGE:?run through browser-stack/browser.mk}
+    pull_policy: never
     restart: unless-stopped
     network_mode: none
     user: "${CONTROLLER_UID:-1993}:${CONTROLLER_UID:-1993}"
@@ -342,6 +346,7 @@ services:
       POD_DATA_GID: ${CONTROLLER_UID:-1993}
       POD_NODE_UID: ${BROWSER_NODE_UID:-1994}
       POD_NODE_GID: ${BROWSER_NODE_UID:-1994}
+      HOST_AGENT_UID: ${HOST_AGENT_UID:-1000}
       MAX_PODS: ${BRIDGE_MAX_PODS:-8}
       POD_NOVNC_BASE: ${POD_NOVNC_BASE:-6100}
       POD_API_BASE: ${POD_API_BASE:-8100}

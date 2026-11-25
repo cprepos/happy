@@ -49,7 +49,17 @@ NODE_CHROME_VERSION := $(shell sed -nE 's/^ARG CHROME_VERSION=([0-9.]+)-[0-9]+$$
 NODE_CHROME_REVISION := $(shell sed -nE 's/^ARG IMAGE_REVISION=([0-9]+)$$/\1/p' $(NODE_CHROME_DIR)/Dockerfile)
 NODE_CHROME_TAG := happy-browser-node-chrome:$(NODE_CHROME_VERSION)-$(NODE_CHROME_REVISION)
 BROWSER_NODE_IMAGE_ENV := $(if $(filter 1,$(BROWSER_NODE_CHROME)),BROWSER_NODE_IMAGE="$$(docker image inspect -f '{{.Id}}' $(NODE_CHROME_TAG) 2>/dev/null || echo not-built:run-make-browser-node-chrome)")
-BROWSER_COMPOSE := $(BROWSER_NODE_IMAGE_ENV) docker compose -p $(BROWSER_PROJECT) -f $(BROWSER_DIR)/compose.browser.yml \
+# The launcher's image and browser-perms.sh's (acl-tools/Dockerfile): node:22-alpine with setfacl,
+# built locally (make browser-acl-tools; browser-init builds it first) and named by its local
+# image id. The tag: the acl package's version and the Dockerfile's IMAGE_REVISION.
+ACL_TOOLS_DIR := $(BROWSER_DIR)/acl-tools
+ACL_TOOLS_TAG := happy-browser-acl-tools:$(shell sed -nE 's/^ARG ACL_VERSION=(.+)$$/\1/p' $(ACL_TOOLS_DIR)/Dockerfile)-$(shell sed -nE 's/^ARG IMAGE_REVISION=([0-9]+)$$/\1/p' $(ACL_TOOLS_DIR)/Dockerfile)
+BROWSER_ACL_IMAGE_ENV = BROWSER_ACL_IMAGE="$$(docker image inspect -f '{{.Id}}' $(ACL_TOOLS_TAG) 2>/dev/null || echo not-built:run-make-browser-acl-tools)"
+# The host agent's uid (the one that runs make, prep): browser-perms.sh, the launcher and the
+# controller patch give it the chats' downloads and uploads through ACL entries.
+HOST_AGENT_UID ?= $(shell id -u)
+export HOST_AGENT_UID
+BROWSER_COMPOSE := $(BROWSER_NODE_IMAGE_ENV) $(BROWSER_ACL_IMAGE_ENV) docker compose -p $(BROWSER_PROJECT) -f $(BROWSER_DIR)/compose.browser.yml \
 	--env-file $(BROWSER_SECRETS)/browser.env $(if $(wildcard $(BROWSER_LOCAL_ENV)),--env-file $(BROWSER_LOCAL_ENV))
 comma := ,
 BROWSER_SVC ?=
@@ -95,10 +105,15 @@ POD_FILTER = --filter label=happy-browser.pod=1 --filter label=happy-browser.pro
 
 .PHONY: browser-init browser-up browser-down browser-status browser-logs browser-verify browser-bridge-test browser-bridge-smoke browser-bridge-restart \
 	browser-pull browser-pods-status browser-pods-reap browser-entrypoint-check \
-	browser-pod-bench browser-pod-smoke browser-controller-patch-test browser-controller-scroll-test browser-node-chrome
+	browser-pod-bench browser-pod-smoke browser-controller-patch-test browser-controller-scroll-test browser-node-chrome browser-acl-tools
 
-browser-init:
-	@HAPPY_BROWSER_HOME="$(HAPPY_BROWSER_HOME)" bash $(BROWSER_DIR)/scripts/browser-init.sh
+browser-init: browser-acl-tools
+	@HAPPY_BROWSER_HOME="$(HAPPY_BROWSER_HOME)" $(BROWSER_ACL_IMAGE_ENV) bash $(BROWSER_DIR)/scripts/browser-init.sh
+
+# The launcher's and browser-perms.sh's image (acl-tools/Dockerfile). Local only; cached.
+browser-acl-tools:
+	@docker build -q -t $(ACL_TOOLS_TAG) $(ACL_TOOLS_DIR) >/dev/null
+	@echo "$(ACL_TOOLS_TAG): $$(docker image inspect -f '{{.Id}}' $(ACL_TOOLS_TAG))"
 
 browser-up: browser-init $(if $(filter 1,$(BROWSER_NODE_CHROME)),browser-node-chrome)
 	$(BROWSER_COMPOSE) up -d --wait

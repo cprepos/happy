@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import {
     launcherConfig, composeImages, nodeSpec, controllerSpec, validate, createEngine, createLauncher, serve, ports, HARD_MAX_PODS,
-    kioskFlag, viewportHeight, demux, pngSize, CHROME_UI_HEIGHT, quarantineDir,
+    kioskFlag, viewportHeight, demux, pngSize, CHROME_UI_HEIGHT, quarantineDir, slotAcls,
 } from '../launcher.mjs';
 
 const BROWSER_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -27,7 +27,8 @@ function setup(extra = {}) {
     const me = { uid: process.getuid(), gid: process.getgid() };
     const cfg = launcherConfig({
         LAUNCHER_BROWSER_DIR: BROWSER_DIR, LAUNCHER_HOME: home, LAUNCHER_PROJECT: 'hbtest',
-        POD_DATA_UID: String(me.uid), POD_DATA_GID: String(me.gid), POD_NODE_UID: String(me.uid + 1), POD_NODE_GID: String(me.gid), ...extra,
+        POD_DATA_UID: String(me.uid), POD_DATA_GID: String(me.gid), POD_NODE_UID: String(me.uid + 1), POD_NODE_GID: String(me.gid),
+        HOST_AGENT_UID: String(me.uid + 2), ...extra,
     });
     return { home, cfg };
 }
@@ -361,7 +362,10 @@ test('config: the Docker socket comes from DOCKER_SOCKET or DOCKER_HOST (the pro
     assert.equal(launcherConfig({ ...base, DOCKER_SOCKET: '/p/d.sock', DOCKER_HOST: 'unix:///x' }).dockerSocket, '/p/d.sock');
     assert.throws(() => launcherConfig({ ...base, DOCKER_HOST: 'tcp://127.0.0.1:2375' }), /unix/);
     const d = launcherConfig(base);
-    assert.deepEqual([d.dataUid, d.dataGid, d.nodeUid, d.nodeGid, d.socketGid], [1993, 1993, 1994, 1994, 1996]);
+    assert.deepEqual([d.dataUid, d.dataGid, d.nodeUid, d.nodeGid, d.socketGid, d.hostAgentUid], [1993, 1993, 1994, 1994, 1996, 1000]);
+    assert.throws(() => launcherConfig({ ...base, HOST_AGENT_UID: '0' }), /root/);
+    assert.throws(() => launcherConfig({ ...base, HOST_AGENT_UID: '1993' }), /HOST_AGENT_UID/);
+    assert.throws(() => launcherConfig({ ...base, HOST_AGENT_UID: '1994' }), /HOST_AGENT_UID/);
 });
 
 test('validation: only the seven ops, with exact fields', () => {
@@ -431,8 +435,9 @@ test('lifecycle over the socket: ensure, idempotent ensure, list, auth round tri
         const creates = eng.calls.filter((c) => c.path === '/containers/create');
         assert.deepEqual(creates.map((c) => c.query.name).sort(), ['hbtest-pod-2-controller', 'hbtest-pod-2-node']);
         for (const d of ['browser-profile', 'downloads', 'auth']) assert.ok(existsSync(join(home, 'data/pods/slot-2', d)));
-        // The node writes browser-profile and downloads through their group; the rest is the controller's alone.
-        for (const [d, mode] of [['', 0o700], ['browser-profile', 0o775], ['downloads', 0o775], ['auth', 0o700]]) {
+        // The node writes browser-profile and downloads through their group; the rest is the controller's
+        // alone. The slot's group bits show its ACL mask (--x, for the host agent's traverse entry).
+        for (const [d, mode] of [['', 0o710], ['browser-profile', 0o770], ['downloads', 0o770], ['auth', 0o700], ['uploads', 0o770], ['artifacts', 0o770]]) {
             const st = statSync(join(home, 'data/pods/slot-2', d));
             assert.equal(st.mode & 0o7777, mode, `slot-2/${d} mode`);
             assert.equal(st.uid, cfg.dataUid);
@@ -548,8 +553,8 @@ test('a slot that cannot be wiped is quarantined, and the new pod still starts',
         assert.equal(e2.result.existing, false);
         assert.equal(eng.containers.size, 2);
         assert.ok([...eng.containers.values()].every((c) => c.Labels['happy-browser.pod_id'] === 'd'.repeat(32)), 'the new pod runs');
-        assert.ok(!existsSync(join(slot1, 'uploads')), 'the slot is fresh');
-        for (const [d, mode] of [['', 0o700], ['browser-profile', 0o775], ['downloads', 0o775], ['auth', 0o700]]) {
+        assert.deepEqual(readdirSync(join(slot1, 'uploads')), [], 'the slot is fresh');
+        for (const [d, mode] of [['', 0o710], ['browser-profile', 0o770], ['downloads', 0o770], ['auth', 0o700]]) {
             const st = statSync(join(slot1, d));
             assert.equal(st.mode & 0o7777, mode, `slot-1/${d} mode`);
             assert.equal(st.uid, cfg.dataUid);
@@ -709,4 +714,71 @@ test('EVIDENCE_TZ is the pod node\'s TZ (its panel clock) and every pod controll
     }
     assert.match(block('browser-node'), /^      TZ: \$\{EVIDENCE_TZ:-America\/Toronto\}$/m);
     assert.doesNotMatch(block('controller'), /^      TZ:/m);
+});
+
+// The host agent's way in: traverse only on the slot and artifacts, full use of uploads and
+// downloads, with defaults so what lands there later is its too, and the rest of the slot shut.
+// Real ACLs (the host's setfacl and getfacl), on a tmp directory the test owns.
+test('a fresh slot gives the host agent its ACL entries and nothing more', async () => {
+    const { home, cfg } = setup();
+    const eng = await fakeEngine(home);
+    const warned = [];
+    const launcher = createLauncher(cfg, { engine: createEngine(eng.socketPath), images: composeImages(COMPOSE), seccomp: SECCOMP, secrets: SECRETS, log: { log() {}, warn(m) { warned.push(m); } } });
+    const { spawnSync } = await import('node:child_process');
+    const acl = (p) => spawnSync('getfacl', ['-n', '-p', '-c', p], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean).sort();
+    const A = cfg.hostAgentUid, C = cfg.dataUid, N = cfg.nodeUid;
+    try {
+        assert.equal((await launcher.handle({ op: 'ensure', slot: 3, pod_id: POD, vnc_password: 'Abcd1234' })).ok, true);
+        assert.deepEqual(warned, []);
+        const slot = join(home, 'data/pods/slot-3');
+        for (const d of ['', 'artifacts']) {
+            const a = acl(join(slot, d));
+            assert.ok(a.includes(`user:${A}:--x`), `${d || 'slot'}: traverse for the host agent`);
+            assert.ok(!a.some((l) => l.startsWith('default:')), `${d || 'slot'}: no default entries`);
+            assert.ok(a.includes('other::---'));
+        }
+        for (const d of ['browser-profile', 'auth']) {
+            assert.ok(!acl(join(slot, d)).some((l) => l.includes(`:${A}:`)), `${d}: nothing for the host agent`);
+            assert.ok(acl(join(slot, d)).includes('other::---'), `${d}: nothing for other`);
+        }
+        for (const d of ['uploads', 'downloads']) {
+            const a = acl(join(slot, d));
+            for (const l of [`user:${A}:rwx`, 'mask::rwx', 'other::---', `default:user:${A}:rwx`, `default:user:${C}:rwx`, 'default:mask::rwx', 'default:other::---']) {
+                assert.ok(a.includes(l), `${d}: ${l} in ${a.join(' ')}`);
+            }
+            assert.equal(a.includes(`default:user:${N}:rwx`), d === 'downloads', `${d}: the node's default entry only on downloads`);
+        }
+        // What lands under them inherits: a subdirectory (as the controller's uploads/<sid>) and a file.
+        mkdirSync(join(slot, 'uploads/sid1'));
+        writeFileSync(join(slot, 'uploads/sid1/f.png'), 'png', { mode: 0o660 });
+        assert.ok(acl(join(slot, 'uploads/sid1')).includes(`default:user:${A}:rwx`));
+        assert.ok(acl(join(slot, 'uploads/sid1/f.png')).some((l) => l.startsWith(`user:${A}:rwx`)));
+    } finally { await eng.close(); }
+});
+
+test('slotAcls: the exact entries', () => {
+    const { cfg } = setup();
+    const A = cfg.hostAgentUid, C = cfg.dataUid, N = cfg.nodeUid;
+    const by = Object.fromEntries(slotAcls(cfg));
+    assert.deepEqual(Object.keys(by), ['', 'artifacts', 'uploads', 'downloads']);
+    assert.equal(by[''], `u:${A}:--x`);
+    assert.equal(by.artifacts, `u:${A}:--x`);
+    assert.equal(by.uploads, `u:${A}:rwx,d:u::rwx,d:u:${A}:rwx,d:u:${C}:rwx,d:g::rwx,d:m::rwx,d:o::---`);
+    assert.equal(by.downloads, `u:${A}:rwx,u:${N}:rwx,d:u::rwx,d:u:${A}:rwx,d:u:${C}:rwx,d:u:${N}:rwx,d:g::rwx,d:m::rwx,d:o::---`);
+});
+
+test('a failed setfacl is logged, and the pod still starts', async () => {
+    const { home, cfg } = setup();
+    const eng = await fakeEngine(home);
+    const warned = [];
+    const launcher = createLauncher(cfg, {
+        engine: createEngine(eng.socketPath), images: composeImages(COMPOSE), seccomp: SECCOMP, secrets: SECRETS,
+        log: { log() {}, warn(m) { warned.push(m); } }, setfacl: () => ({ status: 1, stderr: 'setfacl: not supported' }),
+    });
+    try {
+        const e = await launcher.handle({ op: 'ensure', slot: 0, pod_id: POD, vnc_password: 'Abcd1234' });
+        assert.equal(e.ok, true, e.error);
+        assert.equal(warned.length, 4);
+        assert.match(warned[0], /setfacl on slot 0\/ failed: setfacl: not supported/);
+    } finally { await eng.close(); }
 });

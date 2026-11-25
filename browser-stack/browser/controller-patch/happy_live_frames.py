@@ -1548,6 +1548,80 @@ def share_download(record: Any, session: Any) -> None:
         logger.warning("download %s: could not give it group read/write: %s", record.get("id"), type(exc).__name__)
 
 
+# Each session's own artifact directory is made here, after the launcher (or browser-perms.sh) has
+# named the host agent on artifacts/ itself, so its entries go on here too, the moment upstream's
+# prepare_session_dir makes it: artifacts/<session> traverse only (u:A:--x: the screenshots and
+# the rest stay unreadable to it), artifacts/<session>/downloads full use (u:A:rwx), with default
+# entries (rwx for A and the controller, mask rwx, nothing for other) that every saved download
+# inherits. A is HOST_AGENT_UID; unset, 0, or the controller's own uid, nothing is named. The
+# image has no setfacl: the ACLs are written as the kernel's system.posix_acl_* xattrs. A failure
+# is logged and the session goes on (only the host agent's direct access is missing). Pinned:
+# artifacts.py.
+
+HOST_AGENT_ENV = "HOST_AGENT_UID"
+_ACL_VERSION = 2
+_ACL_USER_OBJ, _ACL_USER, _ACL_GROUP_OBJ, _ACL_MASK, _ACL_OTHER = 0x01, 0x02, 0x04, 0x10, 0x20
+_ACL_UNDEFINED_ID = 0xFFFFFFFF
+
+
+def host_agent_uid() -> int | None:
+    raw = os.environ.get(HOST_AGENT_ENV, "").strip()
+    if not raw.isdigit():
+        return None
+    uid = int(raw)
+    return uid if uid not in (0, os.getuid()) else None
+
+
+def acl_xattr(owner: int, users: dict[int, int], group: int, mask: int, other: int) -> bytes:
+    """A POSIX ACL as the system.posix_acl_access/default xattr: version, then (tag, perm, id) in
+    tag-then-id order, as the kernel requires."""
+    entries = [(_ACL_USER_OBJ, owner, _ACL_UNDEFINED_ID)]
+    entries += [(_ACL_USER, perm, uid) for uid, perm in sorted(users.items())]
+    entries += [(_ACL_GROUP_OBJ, group, _ACL_UNDEFINED_ID), (_ACL_MASK, mask, _ACL_UNDEFINED_ID), (_ACL_OTHER, other, _ACL_UNDEFINED_ID)]
+    return struct.pack("<I", _ACL_VERSION) + b"".join(struct.pack("<HHI", tag, perm & 7, ident) for tag, perm, ident in entries)
+
+
+def share_session_dir(artifact_dir: Path) -> None:
+    agent = host_agent_uid()
+    if agent is None:
+        return
+    import stat as stat_module
+
+    me = os.getuid()
+    try:
+        st = os.lstat(artifact_dir)
+        if not stat_module.S_ISDIR(st.st_mode) or st.st_uid != me:
+            return
+        mode = stat_module.S_IMODE(st.st_mode)
+        os.setxattr(
+            artifact_dir,
+            "system.posix_acl_access",
+            acl_xattr(mode >> 6 & 7, {agent: 1}, mode >> 3 & 7, (mode >> 3 & 7) | 1, 0),
+            follow_symlinks=False,
+        )
+        downloads = artifact_dir / "downloads"
+        st = os.lstat(downloads)
+        if not stat_module.S_ISDIR(st.st_mode) or st.st_uid != me:
+            return
+        mode = stat_module.S_IMODE(st.st_mode)
+        os.setxattr(downloads, "system.posix_acl_access", acl_xattr(7, {agent: 7}, mode >> 3 & 7, 7, 0), follow_symlinks=False)
+        os.setxattr(downloads, "system.posix_acl_default", acl_xattr(7, {agent: 7, me: 7}, 7, 7, 0), follow_symlinks=False)
+    except (OSError, NotImplementedError) as exc:
+        logger.warning("artifact dir %s: could not name the host agent: %s", artifact_dir.name, type(exc).__name__)
+
+
+def build_artifacts(artifacts_module: Any) -> dict[str, Any]:
+    upstream_prepare = artifacts_module.SessionArtifactService.prepare_session_dir
+
+    def prepare_session_dir(self: Any, session_id: str) -> Path:
+        artifact_dir = upstream_prepare(self, session_id)
+        share_session_dir(Path(artifact_dir))
+        return artifact_dir
+
+    prepare_session_dir._happy_upstream = upstream_prepare  # type: ignore[attr-defined]
+    return {"prepare_session_dir": prepare_session_dir}
+
+
 def build_downloads(downloads_module: Any) -> dict[str, Any]:
     upstream_capture = downloads_module.DownloadCaptureService.capture
 
@@ -2121,6 +2195,10 @@ def apply() -> None:
 
     for name, fn in build_downloads(downloads).items():
         setattr(downloads.DownloadCaptureService, name, fn)
+    from app import artifacts
+
+    for name, fn in build_artifacts(artifacts).items():
+        setattr(artifacts.SessionArtifactService, name, fn)
     logger.warning(
         "happy_live_frames: patched auto-browser %s share_snapshot/light_snapshot, scroll and new tabs; screenshot audit in %s, default view %s",
         EXPECTED_VERSION,

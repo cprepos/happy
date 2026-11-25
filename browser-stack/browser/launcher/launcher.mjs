@@ -42,6 +42,7 @@
 // Paths: LAUNCHER_BROWSER_DIR (this repo's browser-stack/browser) and LAUNCHER_HOME (the host's
 // HAPPY_BROWSER_HOME) are host paths, mounted at the same paths in this container, because the
 // bind sources it hands the Engine API are resolved on the host.
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer, request as httpRequest } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
@@ -93,6 +94,11 @@ export function launcherConfig(env = process.env) {
         nodeUid: num('POD_NODE_UID', 1994),
         nodeGid: num('POD_NODE_GID', 1994),
         socketGid: num('LAUNCHER_SOCKET_GID', 1996),
+        // The host agent's uid (prep, 1000): the agent in a chat reads, moves and deletes what its
+        // pod downloaded and stages files for upload straight on the host, through ACL entries on
+        // the slot's downloads, uploads and artifacts (slotAcls below). Never root, never the
+        // controller's or the node's uid.
+        hostAgentUid: num('HOST_AGENT_UID', 1000),
         maxSessions: 1,
         rateLimit: num('REQUEST_RATE_LIMIT_REQUESTS', 1200),
         logLevel: env.LOG_LEVEL || 'INFO',
@@ -116,7 +122,8 @@ export function launcherConfig(env = process.env) {
     cfg.viewportHeight = num('BROWSER_VIEWPORT_HEIGHT', viewportHeight(cfg));
     if (cfg.viewportHeight < 1 || cfg.viewportHeight > cfg.height) throw new Error('BROWSER_VIEWPORT_HEIGHT must be 1..BROWSER_HEIGHT');
     if (!/^[a-z0-9][a-z0-9_-]*$/.test(cfg.project)) throw new Error('LAUNCHER_PROJECT must be a compose project name');
-    for (const k of ['dataUid', 'dataGid', 'nodeUid', 'nodeGid']) if (cfg[k] === 0) throw new Error(`${k} must not be root`);
+    for (const k of ['dataUid', 'dataGid', 'nodeUid', 'nodeGid', 'hostAgentUid']) if (cfg[k] === 0) throw new Error(`${k} must not be root`);
+    if (cfg.hostAgentUid === cfg.dataUid || cfg.hostAgentUid === cfg.nodeUid) throw new Error("HOST_AGENT_UID must not be the controller's or the node's uid");
     for (const base of ['novncBase', 'apiBase', 'playwrightBase']) {
         if (cfg[base] < 1024 || cfg[base] + HARD_MAX_PODS > 65535) throw new Error(`${base} out of range`);
     }
@@ -331,6 +338,8 @@ export function controllerSpec(cfg, { slot, podId, image, secrets }) {
             'NETWORK_INSPECTOR_CAPTURE_BODIES=false',
             'CONNECT_RETRY_DELAY_SECONDS=0.2',
             'HOME=/tmp',
+            // The patch gives this uid each session's artifacts/<sid>/downloads (slotAcls).
+            `HOST_AGENT_UID=${cfg.hostAgentUid}`,
         ],
         User: `${cfg.dataUid}:${cfg.dataGid}`,
         Labels: labels(cfg, slot, podId, 'controller'),
@@ -439,7 +448,11 @@ export function pngSize(buf) {
 // owns(stat, path): whether the launcher may chmod an entry, so wipe can make it removable. Its own uid
 // in production; the tests pass another test, since an unprivileged test cannot make a directory
 // someone else owns.
-export function createLauncher(cfg, { engine, images, seccomp, secrets, captureScript = '', log = console, owns = (st) => st.uid === cfg.dataUid } = {}) {
+//
+// setfacl(args): runs setfacl (the launcher's image is node:22-alpine with the acl package,
+// acl-tools/Dockerfile); the tests may pass another.
+export function createLauncher(cfg, { engine, images, seccomp, secrets, captureScript = '', log = console, owns = (st) => st.uid === cfg.dataUid,
+    setfacl = (args) => spawnSync('setfacl', args, { encoding: 'utf8' }) } = {}) {
     const locks = new Map();
     // One op at a time per key. The chain kept in locks is next with its failure swallowed (the
     // caller gets next itself, rejection and all): a chain that could reject would be a second,
@@ -491,11 +504,21 @@ export function createLauncher(cfg, { engine, images, seccomp, secrets, captureS
         mkdirSync(cfg.podsDir, { recursive: true });
         // As browser-init.sh does for the shared stack: the node (its own uid) writes browser-profile
         // and downloads through their group, the controller (the owner, as the whole slot) reads the
-        // endpoint file there, and the launcher can still wipe both; the rest stays 700.
-        for (const [d, mode, gid] of [['', 0o700, cfg.dataGid], ['browser-profile', 0o775, cfg.nodeGid], ['downloads', 0o775, cfg.nodeGid], ['auth', 0o700, cfg.dataGid]]) {
+        // endpoint file there, and the launcher can still wipe both; the rest stays 700. Nothing is
+        // open to "other": the host agent is let through the slot by its own ACL entries only
+        // (slotAcls), so browser-profile, auth and the controller's own directories stay shut to it.
+        // uploads and artifacts are made here (the controller only makes what is missing), so they
+        // carry their ACLs before the pod starts.
+        for (const [d, mode, gid] of [['', 0o700, cfg.dataGid], ['browser-profile', 0o770, cfg.nodeGid], ['downloads', 0o770, cfg.nodeGid],
+            ['auth', 0o700, cfg.dataGid], ['uploads', 0o770, cfg.dataGid], ['artifacts', 0o770, cfg.dataGid]]) {
             mkdirSync(join(dir, d), { recursive: true });
             chownSync(join(dir, d), cfg.dataUid, gid);
             chmodSync(join(dir, d), mode);
+        }
+        for (const [d, spec] of slotAcls(cfg)) {
+            const r = setfacl(['-m', spec, join(dir, d)]);
+            // A slot without them still runs its pod; only the host agent's direct access is missing.
+            if (r.status !== 0) log.warn(`launcher: setfacl on slot ${slot}/${d} failed: ${String(r.stderr || r.error?.message || '').trim()}`);
         }
         return dir;
     };
@@ -660,6 +683,27 @@ export function createLauncher(cfg, { engine, images, seccomp, secrets, captureS
         }
     }
     return { handle, ops };
+}
+
+// The ACL entries a fresh slot gets for the host agent (HOST_AGENT_UID, A below), as setfacl -m
+// specs, in order. A named entry counts only through the mask, which chmod sets from the group
+// bits, so these go on after the modes above.
+//   slot-N, artifacts   u:A:--x       traverse only: A can reach what it is named into, never list
+//                                     or read the rest (browser-profile, auth, audit, sessions...)
+//   uploads             u:A:rwx       A stages files (and may delete them); each uploads/<sid> the
+//   downloads           u:A:rwx       controller makes, and what the node or A writes, inherits the
+//                                     default entries: rwx for A, for the controller (C: the
+//                                     launcher too, so a tree A made still wipes) and on downloads
+//                                     for the node (N), mask rwx, nothing for other. A default ACL
+//                                     makes umask moot under it.
+// artifacts/<sid> and its downloads (where a captured download is saved) are the controller's:
+// the patch names A there itself (HOST_AGENT_UID in its env). The known limit: entries are per
+// uid, not per chat, so this lets the host agent's uid into every slot, not only its own chat's.
+export function slotAcls(cfg) {
+    const A = cfg.hostAgentUid, C = cfg.dataUid, N = cfg.nodeUid;
+    const share = (extra) => [`u:${A}:rwx`, ...extra.map((u) => `u:${u}:rwx`), 'd:u::rwx', `d:u:${A}:rwx`, `d:u:${C}:rwx`,
+        ...extra.map((u) => `d:u:${u}:rwx`), 'd:g::rwx', 'd:m::rwx', 'd:o::---'].join(',');
+    return [['', `u:${A}:--x`], ['artifacts', `u:${A}:--x`], ['uploads', share([])], ['downloads', share([N])]];
 }
 
 export const QUARANTINE = '.quarantine';
