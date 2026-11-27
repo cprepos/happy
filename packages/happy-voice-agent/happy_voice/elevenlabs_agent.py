@@ -531,6 +531,9 @@ async def entrypoint(ctx: JobContext) -> None:
     ctx.room.on("data_received", on_data)
 
     await ctx.connect()
+    # livekit-server sends joins of non-publishing participants on a 3 s ticker, past the SDK's
+    # 3 s agentReadyTimeout; an attribute change goes out at once, so the app sees us now.
+    await ctx.room.local_participant.set_attributes({"lk.agent.state": "initializing"})
 
     participant = await ctx.wait_for_participant(
         kind=[
