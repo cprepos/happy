@@ -85,6 +85,7 @@ The firewall must admit the Macs to 8904 (root, once):
 ```
 sudo ufw allow proto tcp from 192.168.2.55 to 192.168.2.72 port 8904
 sudo ufw allow proto tcp from 192.168.2.56 to 192.168.2.72 port 8904
+sudo ufw allow proto tcp from 192.168.2.87 to 192.168.2.72 port 8904   # prep-max (Linux)
 ```
 
 ## Embedding the live view

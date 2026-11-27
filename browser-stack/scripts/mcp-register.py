@@ -125,7 +125,22 @@ SKILL_DEST = "~/.claude/skills/agent-vault/SKILL.md"
 REMOTES = [
     ("prep-air", ["claude", "opencode", "gemini", "happy-agent"]),
     ("prep-pro", ["claude", "codex", "opencode", "gemini", "antigravity", "happy-agent"]),
+    ("prep-max", ["claude"]),
 ]
+# Remote hosts that are not set up like the Macs: their node and client folder (gateway transport).
+# prep-max is Linux: the isolated Node from selfhost/cli-service/setup.sh, no Homebrew.
+REMOTE_PATHS = {
+    "prep-max": {"node": "/home/prep/happy/.node/bin/node", "stack": "/home/prep/.local/share/browser-stack"},
+}
+
+
+def remote_node(host):
+    return REMOTE_PATHS.get(host, {}).get("node", MAC_NODE)
+
+
+def remote_client(host):
+    stack = REMOTE_PATHS.get(host, {}).get("stack")
+    return stack + "/client/mcp-gateway-client.mjs" if stack else MAC_CLIENT
 # The chat ids a Mac harness hands its MCP servers, passed on to prep-ml.
 SESSION_VARS = ["HAPPY_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "HAPPY_FORKED_FROM_SESSION_ID"]
 ID_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
@@ -187,19 +202,19 @@ def marks(script):
     return out
 
 
-def mac_command(script, env, agent=False, transport=None):
+def mac_command(script, env, agent=False, transport=None, host=None):
     """(command, args) for a Mac entry that runs `script`, by MAC_TRANSPORT."""
     transport = transport or MAC_TRANSPORT
     if transport == "ssh":
         return "/bin/sh", remote_argv(script, env)
     if transport != "gateway":
         raise ValueError("MAC_TRANSPORT must be gateway or ssh, not %r" % transport)
-    args = [MAC_CLIENT, "--url", gateway_url(script)]
+    args = [remote_client(host), "--url", gateway_url(script)]
     if agent:
         # A Happy Agent daemon runs every chat in one process: the client reads which
         # chat a call is from in that Mac's daemon database (locally, read-only).
         args += ["--agent-db", REMOTE_AGENT_DB, "--agent-python", REMOTE_PYTHON]
-    return MAC_NODE, args
+    return remote_node(host), args
 
 
 def remote_argv(script, env):
@@ -419,7 +434,8 @@ class RemoteIO:
         """Once per Mac per run. ssh: `ssh <mac> 'ssh -o BatchMode=yes prep-ml true'`.
         gateway: the client, its key and node are on the Mac (`make gateway-mac-install`)."""
         if self.host not in PROBED and MAC_TRANSPORT == "gateway":
-            probe = SSH + [self.host, "test -f %s && test -f %s && test -x %s" % (MAC_CLIENT, MAC_KEY, MAC_NODE)]
+            node = remote_node(self.host)
+            probe = SSH + [self.host, "test -f %s && test -f %s && test -x %s" % (remote_client(self.host), MAC_KEY, node)]
             try:
                 r = subprocess.run(probe, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=40)
                 ok, why = r.returncode == 0, "exit %d" % r.returncode
@@ -427,7 +443,7 @@ class RemoteIO:
                 ok, why = False, type(e).__name__
             PROBED[self.host] = ok
             if ok:
-                report.append("%s: the gateway client, its key and %s are there" % (self.host, MAC_NODE))
+                report.append("%s: the gateway client, its key and %s are there" % (self.host, node))
             else:
                 report.append("%s: no gateway client, key or node there (%s; make gateway-mac-install HOST=%s); its configs left alone"
                               % (self.host, why, self.host))
@@ -1118,7 +1134,7 @@ def remote_target(io, harness):
     def cmd(s, env, agent=False):
         if agent and MAC_TRANSPORT == "ssh":
             env = agent_env(s, env, io.host)
-        return mac_command(s, env, agent=agent)
+        return mac_command(s, env, agent=agent, host=io.host)
     if harness == "claude":
         def make(s, env):
             c, a = cmd(s, {})

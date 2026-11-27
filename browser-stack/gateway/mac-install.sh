@@ -33,7 +33,7 @@ tar -C "$here" -cf - --exclude=test client identity | "${ssh_[@]}" "set -e
 # (compared by sha256; the hash of a random key gives nothing away); a different one goes
 # to the trash first.
 want=$(sha256sum < "$key" | cut -c1-64)
-have=$("${ssh_[@]}" 'k=$HOME/.config/browser-stack/gateway-key; [ -f "$k" ] && shasum -a 256 < "$k" | cut -c1-64 || true')
+have=$("${ssh_[@]}" 'k=$HOME/.config/browser-stack/gateway-key; [ -f "$k" ] && { sha256sum < "$k" 2>/dev/null || shasum -a 256 < "$k"; } | cut -c1-64 || true')
 if [ "$have" = "$want" ]; then
   "${ssh_[@]}" 'chmod 600 $HOME/.config/browser-stack/gateway-key'; echo "$host: key unchanged"
 else

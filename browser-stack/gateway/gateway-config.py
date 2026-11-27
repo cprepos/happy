@@ -61,7 +61,7 @@ WAIT_MAX_S = "570"
 
 # Each Mac: its address on the LAN. A key works only from that address.
 # BROWSER_STACK_MACS (name=ip,name=ip; LAN_CLIENTS in selfhost/vault/.env) overrides the default.
-DEFAULT_MACS = "prep-air=192.168.2.56,prep-pro=192.168.2.55"
+DEFAULT_MACS = "prep-air=192.168.2.56,prep-pro=192.168.2.55,prep-max=192.168.2.87"
 MACS = [tuple(p.strip().split("=", 1)) for p in (os.environ.get("BROWSER_STACK_MACS") or DEFAULT_MACS).split(",") if p.strip()]
 
 MAC_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
