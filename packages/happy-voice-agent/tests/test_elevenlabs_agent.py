@@ -147,28 +147,37 @@ def test_client_tool_error_and_timeout(monkeypatch):
     asyncio.run(no_app())
 
 
-def test_end_call_waits_for_the_goodbye_then_tells_the_sdk(monkeypatch):
+class _EndSession:
+    closed = False
+
+    async def aclose(self):
+        self.closed = True
+
+
+class _EndCtx:
+    def __init__(self):
+        self.session = _EndSession()
+        self.waited = False
+
+    async def wait_for_playout(self):
+        self.waited = True
+
+
+def _said_goodbye() -> llm.ChatContext:
+    ctx = llm.ChatContext.empty()
+    ctx.add_message(role="user", content="That's all, bye!")
+    ctx.add_message(role="assistant", content="Bye, talk soon.")
+    return ctx
+
+
+def test_end_call_after_a_goodbye_tells_the_sdk(monkeypatch):
     monkeypatch.setattr(ela, "END_CALL_GRACE", 0.01)
-
-    class _Session:
-        closed = False
-
-        async def aclose(self):
-            self.closed = True
-
-    class _Ctx:
-        def __init__(self):
-            self.session = _Session()
-            self.waited = False
-
-        async def wait_for_playout(self):
-            self.waited = True
 
     async def run():
         call = _call()
-        agent = _el_agent(call=call)
-        ctx = _Ctx()
-        await ela.ElevenLabsAssistant.end_call(agent, {}, ctx)
+        agent = _el_agent(call=call, chat_ctx=_said_goodbye())
+        ctx = _EndCtx()
+        assert await ela.ElevenLabsAssistant.end_call(agent, {}, ctx) is None
         # a second call in the same goodbye sends nothing more
         await ela.ElevenLabsAssistant.end_call(agent, {}, ctx)
         await asyncio.sleep(0.05)
@@ -181,6 +190,38 @@ def test_end_call_waits_for_the_goodbye_then_tells_the_sdk(monkeypatch):
     assert event["agent_tool_response"]["tool_name"] == "end_call"
     assert el.validate_agent_event(event) == []
     assert ctx.session.closed
+
+
+def test_end_call_without_a_goodbye_asks_for_one_first(monkeypatch):
+    monkeypatch.setattr(ela, "END_CALL_GRACE", 0.01)
+    monkeypatch.setattr(ela, "GOODBYE_TIMEOUT", 0.05)
+    history = llm.ChatContext.empty()
+    history.add_message(role="assistant", content="The cache task is still working.")
+    history.add_message(role="user", content="That's all, bye!")
+
+    async def run():
+        call = _call()
+        agent = _el_agent(call=call, chat_ctx=history)
+        ctx = _EndCtx()
+        reply = await ela.ElevenLabsAssistant.end_call(agent, {}, ctx)
+        assert "goodbye" in reply.lower()
+        assert call.goodbye_pending and call.room.local_participant.sent == []
+        # no goodbye came (the reply was skipped): it hangs up anyway
+        await asyncio.sleep(0.1)
+        return call, ctx
+
+    call, ctx = asyncio.run(run())
+    (event, _), = call.room.local_participant.sent
+    assert event["agent_tool_response"]["tool_name"] == "end_call"
+    assert not call.goodbye_pending and ctx.session.closed
+
+
+def test_said_since_last_user_turn():
+    assert ela.said_since_last_user_turn(_said_goodbye().items)
+    ctx = _said_goodbye()
+    ctx.add_message(role="user", content="wait")
+    assert not ela.said_since_last_user_turn(ctx.items)
+    assert not ela.said_since_last_user_turn([])
 
 
 # --- prompt and initial context -------------------------------------------------------------

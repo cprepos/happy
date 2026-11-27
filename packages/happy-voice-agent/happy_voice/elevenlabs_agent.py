@@ -92,6 +92,8 @@ TOOL_TIMEOUT = float(os.environ.get("EL_TOOL_TIMEOUT", "10"))
 PING_INTERVAL = float(os.environ.get("EL_PING_INTERVAL", "5"))
 # After end_call is announced, how long the SDK has to hang up before the worker does (s).
 END_CALL_GRACE = 3.0
+# how long end_call waits for the goodbye it asked for before hanging up anyway (s)
+GOODBYE_TIMEOUT = 10.0
 
 
 def agent_name() -> str:
@@ -303,6 +305,25 @@ class CallState:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     sent: list[dict[str, Any]] = field(default_factory=list)
     ending: bool = False
+    # end_call came without a goodbye: hang up once the reply asked for has played
+    goodbye_pending: bool = False
+    hung_up: bool = False
+
+    async def hang_up(self, session: Any) -> None:
+        """Tells the SDK the call is over (it ends the call on this), and closes the session
+        ourselves if the app is still there after END_CALL_GRACE."""
+        if self.hung_up:
+            return
+        self.hung_up = True
+        self.goodbye_pending = False
+        await self.send(el.agent_tool_response(el.END_CALL_TOOL, f"toolu_{uuid.uuid4().hex[:24]}", self.event_id))
+
+        async def close_if_still_here() -> None:
+            await asyncio.sleep(END_CALL_GRACE)
+            logger.info("end_call: the app did not hang up; closing the session")
+            await session.aclose()
+
+        asyncio.create_task(close_if_still_here())
 
     async def send(self, event: dict[str, Any]) -> None:
         try:
@@ -408,28 +429,45 @@ class ElevenLabsAssistant(Agent):
         return None
 
     @function_tool(raw_schema=END_CALL_SCHEMA)
-    async def end_call(self, raw_arguments: dict[str, Any], context: RunContext) -> None:
+    async def end_call(self, raw_arguments: dict[str, Any], context: RunContext) -> str | None:
         call = self._call
         if call.ending:
             return None
         call.ending = True
-        tool_call_id = f"toolu_{uuid.uuid4().hex[:24]}"
-        logger.info("end_call: hanging up after the goodbye")
         try:
             # the goodbye the model said before calling this
             await context.wait_for_playout()
         except Exception:
             logger.exception("end_call: waiting for the goodbye failed")
-        await call.send(el.agent_tool_response(el.END_CALL_TOOL, tool_call_id, call.event_id))
+        if said_since_last_user_turn(self.chat_ctx.items):
+            logger.info("end_call: hanging up after the goodbye")
+            await call.hang_up(context.session)
+            return None
+        # Called without a word: hanging up on the person mid-sentence is worse than one more
+        # short reply, so ask for the goodbye and hang up when it has played (_on_speech_done).
+        logger.info("end_call: no goodbye said; asking for one before hanging up")
+        call.goodbye_pending = True
         session = context.session
 
-        async def hang_up_if_still_here() -> None:
-            await asyncio.sleep(END_CALL_GRACE)
-            logger.info("end_call: the app did not hang up; closing the session")
-            await session.aclose()
+        async def hang_up_anyway() -> None:
+            await asyncio.sleep(GOODBYE_TIMEOUT)
+            if call.goodbye_pending:
+                logger.info("end_call: no goodbye in %.0fs; hanging up", GOODBYE_TIMEOUT)
+                await call.hang_up(session)
 
-        asyncio.create_task(hang_up_if_still_here())
-        return None
+        asyncio.create_task(hang_up_anyway())
+        return "Hanging up after your reply. Say a short goodbye now, nothing else."
+
+
+def said_since_last_user_turn(items: list[Any]) -> bool:
+    """Whether the agent said anything after the person's last turn."""
+    for item in reversed(items):
+        if isinstance(item, llm.ChatMessage):
+            if item.role == "user":
+                return False
+            if item.role == "assistant" and (item.text_content or "").strip():
+                return True
+    return False
 
 
 # --- entrypoint ----------------------------------------------------------------------------
@@ -627,6 +665,9 @@ async def entrypoint(ctx: JobContext) -> None:
         if handle.interrupted:
             logger.info("barge-in: agent interrupted (event %d)", event_id)
             call.post(el.interruption(event_id))
+        elif call.goodbye_pending and said_since_last_user_turn(session.history.items):
+            logger.info("end_call: hanging up after the goodbye")
+            asyncio.create_task(call.hang_up(session))
 
     @session.on("speech_created")
     def _on_speech(ev) -> None:
