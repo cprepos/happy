@@ -14,6 +14,8 @@
 #   make voice-agent-up    build and (re)start only the voice-agent worker (other services untouched)
 #   make voice-agent-logs  follow the voice-agent worker logs
 #   make voice-agent-e2e   headless fake-app conversation against the running worker (tests/e2e_fake_app.py)
+#   make voice-agent-e2e-el  the same against the ElevenLabs-protocol worker, acting as the Swift SDK
+#                          (tests/e2e_elevenlabs_sdk.py); VOICE_AGENT_E2E_EL_ARGS="--scenario compaction ..."
 #   make voice-agent-test  the worker's unit tests (tests/test_units.py, no services needed);
 #                          VOICE_AGENT_TEST_ARGS=... extra pytest flags, e.g. "-k compaction"
 #   make voice-tts-lead-sweep  measure Kokoro's pre-speech lead per voice (tests/tts_lead_sweep.py)
@@ -30,7 +32,7 @@ SVC ?=
 VOICE_MAC ?= 192.168.2.56
 VOICE_MAC_SSH ?= prep-air
 
-.PHONY: voice-keys voice-build voice-up voice-down voice-status voice-logs voice-smoke voice-try voice-agent-up voice-agent-logs voice-agent-e2e voice-stream-e2e voice-agent-venv voice-tts-lead-sweep voice-agent-test
+.PHONY: voice-keys voice-build voice-up voice-down voice-status voice-logs voice-smoke voice-try voice-agent-up voice-agent-logs voice-agent-e2e voice-agent-e2e-el voice-stream-e2e voice-agent-venv voice-tts-lead-sweep voice-agent-test
 
 VOICE_TRY_VENV ?= $(HOME)/.cache/happy-voice-try-venv
 # 8899 was the old default; the host's agentgateway took it (it serves the virtual `coder`).
@@ -135,6 +137,11 @@ voice-agent-test: voice-agent-venv
 VOICE_AGENT_E2E_ARGS ?=
 voice-agent-e2e: $(VOICE_ENV) voice-agent-venv
 	"$(VOICE_AGENT_VENV)/bin/python" $(VOICE_AGENT_DIR)/tests/e2e_fake_app.py --env $(VOICE_ENV) $(VOICE_AGENT_E2E_ARGS)
+
+# e.g. make voice-agent-e2e-el VOICE_AGENT_E2E_EL_ARGS="--livekit ws://192.168.2.56:7880"
+VOICE_AGENT_E2E_EL_ARGS ?=
+voice-agent-e2e-el: $(VOICE_ENV) voice-agent-venv
+	"$(VOICE_AGENT_VENV)/bin/python" $(VOICE_AGENT_DIR)/tests/e2e_elevenlabs_sdk.py --env $(VOICE_ENV) $(VOICE_AGENT_E2E_EL_ARGS)
 
 # Measures the speech-free lead Kokoro puts in front of a segment, per voice and text: where
 # happy_voice/tts_trim.py's thresholds come from. Needs the tts service up, nothing else.
