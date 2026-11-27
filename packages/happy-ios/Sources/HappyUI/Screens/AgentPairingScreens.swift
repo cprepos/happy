@@ -48,18 +48,21 @@ final class PairingEmojiLabel: UILabel {
 @MainActor
 enum PairingFlow {
     @discardableResult
-    /// `start`: how the link came, for the pairing's events.
+    /// `start`: how the link came, for the pairing's events. True when the
+    /// pairing screen opens; false when it is not an agent link, or it
+    /// could not open and that was said.
     static func openIfAgentPairing(_ text: String, context: AppContext, on controller: UIViewController, start: PairingStart = .openedLink) -> Bool {
         guard PairingLink.isAgentConnection(text) else { return false }
         do {
             let link = try PairingLink(text)
             let pairing = AgentPairingViewController(context: context, link: link, start: start)
-            controller.navigationController?.pushViewController(pairing, animated: true)
+            // Once nothing is over the stack: AgentPairingScreens+Addons.swift.
+            return push(pairing, from: controller)
         } catch {
             Analytics.shared.directPairingFailed(error, start: start)
             Alerts.show("Could not pair", error.localizedDescription, on: controller)
         }
-        return true
+        return false
     }
 
 }

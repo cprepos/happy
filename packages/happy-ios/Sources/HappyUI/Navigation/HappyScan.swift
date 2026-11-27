@@ -83,8 +83,7 @@ enum HappyScan {
         log.debug("code \(describe(text), privacy: .public) → \(String(describing: route).prefix(40), privacy: .public)")
         switch route {
         case .connectAgent:
-            PairingFlow.openIfAgentPairing(text, context: context, on: controller, start: start)
-            return .pairing
+            return PairingFlow.openIfAgentPairing(text, context: context, on: controller, start: start) ? .pairing : .ended
         case .connectComputer(let key):
             guard let session = context.account.session else { return .ended }
             return await approve(.terminal(publicKey: key), session: session, start: start, on: controller, busy: busy)

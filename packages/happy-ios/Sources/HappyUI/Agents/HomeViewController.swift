@@ -648,10 +648,13 @@ final class HomeViewController: UIViewController {
             },
             QuickAction(id: "connect-agent", title: Strings.connectAgent, glyph: "laptop-outline") { [weak self] in
                 guard let self else { return }
+                // Its pairing screen pushes onto home, so the search goes first.
+                endSearch(animated: false)
                 AccountAdding.begin(context: context, from: self)
             },
             QuickAction(id: "scan", title: Strings.scanQRCode, glyph: "qr-code-outline") { [weak self] in
                 guard let self else { return }
+                endSearch(animated: false)
                 Scan.scan(context: context, on: self)
             },
             QuickAction(id: "settings", title: Strings.openSettingsAction, glyph: "settings-outline") { [weak self] in

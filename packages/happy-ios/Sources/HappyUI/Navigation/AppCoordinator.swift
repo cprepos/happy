@@ -491,17 +491,8 @@ public final class AppCoordinator {
     /// `-[_UIContextMenuPresentation dismiss]`, a link arriving while the
     /// install screen's ⋯ was open).
     private func clearedForLink(then: @escaping @MainActor () -> Void) -> Bool {
-        guard let presented = shell.presentedViewController else { return true }
-        if presented.isBeingDismissed {
-            if let coordinator = presented.transitionCoordinator {
-                coordinator.animate(alongsideTransition: nil) { _ in then() }
-            } else {
-                DispatchQueue.main.async { then() }
-            }
-            return false
-        }
-        shell.dismiss(animated: true) { then() }
-        return false
+        // Shared with in-app pairing links: PresentationsClear.swift.
+        shell.clearedOfPresentations(then: then)
     }
 
     /// The title of happy-app's UIKit headers (react-native-screens 4.22.0
