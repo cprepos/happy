@@ -92,6 +92,9 @@ public enum SessionDetails {
         if flavor == "codex" || flavor == "openai" || flavor == "gpt", let thread = truthy(metadata?["codexThreadId"]) {
             return "happy codex --resume \(thread)"
         }
+        if flavor == "agy", let conversation = truthy(metadata?["agyConversationId"]) {
+            return "happy agy --resume \(conversation)"
+        }
         if let claude = truthy(metadata?["claudeSessionId"]) {
             return "happy claude --resume \(claude)"
         }
@@ -215,7 +218,9 @@ public enum SessionDetails {
         if session.isRig || metadata?["capabilities"]?["resume"]?.boolValue == false { return .hidden }
         if SessionState(session) != .disconnected { return .hidden }
         guard truthy(metadata?["machineId"]) != nil else { return .missingMachine }
-        guard truthy(metadata?["claudeSessionId"]) != nil || truthy(metadata?["codexThreadId"]) != nil else {
+        guard truthy(metadata?["claudeSessionId"]) != nil
+            || truthy(metadata?["codexThreadId"]) != nil
+            || truthy(metadata?["agyConversationId"]) != nil else {
             return .missingBackendId
         }
         guard let machine else { return .sameMachineOnly }

@@ -87,6 +87,13 @@ final class SessionDetailsFormattingTests: XCTestCase {
         XCTAssertNil(SessionDetails.resumeCommand(.object(["client": .object(["id": .string("rig")]), "claudeSessionId": .string("c1")])))
         XCTAssertNil(SessionDetails.resumeCommand(.object(["capabilities": .object(["resume": .bool(false)]), "claudeSessionId": .string("c1")])))
         XCTAssertNil(SessionDetails.resumeCommand(.object(["flavor": .string("codex")])))
+        XCTAssertEqual(
+            SessionDetails.resumeCommand(.object(["path": .string("/w"), "flavor": .string("agy"), "agyConversationId": .string("a1")])),
+            "cd '/w' && happy agy --resume a1"
+        )
+        XCTAssertNil(SessionDetails.resumeCommand(.object(["flavor": .string("agy")])))
+        XCTAssertNil(SessionDetails.resumeCommand(.object(["agyConversationId": .string("a1")])),
+                     "a conversation id only resumes an agy session")
     }
 
     func testSandbox() {
@@ -196,6 +203,8 @@ final class SessionDetailsQuickActionTests: XCTestCase {
         XCTAssertEqual(SessionDetails.resumeAvailability(session(metadata: claude), machine: machine(active: false, metadata: resumable)), .machineOffline)
         XCTAssertEqual(SessionDetails.resumeAvailability(session(metadata: claude), machine: machine()), .hidden, "an older daemon")
         XCTAssertEqual(SessionDetails.resumeAvailability(session(metadata: claude), machine: machine(metadata: resumable)), .available)
+        let agy: [String: JSONValue] = ["machineId": .string("m1"), "path": .string("/w"), "flavor": .string("agy"), "agyConversationId": .string("a1")]
+        XCTAssertEqual(SessionDetails.resumeAvailability(session(metadata: agy), machine: machine(metadata: resumable)), .available)
     }
 
     func testForkSource() {

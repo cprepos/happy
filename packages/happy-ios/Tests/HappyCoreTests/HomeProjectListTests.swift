@@ -276,13 +276,15 @@ final class SessionQuickActionsTests: XCTestCase {
         machine: String? = "m1",
         path: String? = "/src/app",
         claude: String? = "c-1",
-        codex: String? = nil
+        codex: String? = nil,
+        agy: String? = nil
     ) -> SessionRecord {
         var metadata: [String: JSONValue] = [:]
         if let machine { metadata["machineId"] = .string(machine) }
         if let path { metadata["path"] = .string(path) }
         if let claude { metadata["claudeSessionId"] = .string(claude) }
         if let codex { metadata["codexThreadId"] = .string(codex) }
+        if let agy { metadata["agyConversationId"] = .string(agy) }
         if let flavor { metadata["flavor"] = .string(flavor) }
         if rig { metadata["client"] = .object(["id": .string("rig")]) }
         return SessionRecord(
@@ -324,6 +326,9 @@ final class SessionQuickActionsTests: XCTestCase {
         }
         XCTAssertEqual(blocker(session(machine: nil), nil), .missingMachine)
         XCTAssertEqual(blocker(session(claude: nil), machine()), .missingBackendId)
+        XCTAssertNil(blocker(session(flavor: "agy", claude: nil, agy: "conv-1"), machine()),
+                     "an Antigravity conversation id is enough to resume")
+        XCTAssertEqual(blocker(session(flavor: "agy", claude: nil, agy: ""), machine()), .missingBackendId)
         XCTAssertEqual(blocker(session(), nil), .sameMachineOnly)
         XCTAssertEqual(blocker(session(), machine(active: false)), .machineOffline)
         XCTAssertFalse(SessionQuickActions.Resume(session: session(), machine: machine(resume: false)).canShowResume,
