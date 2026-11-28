@@ -11,6 +11,7 @@ COMPOSE_RS := $(COMPOSE) --profile rs
 help:
 	@echo "Targets: env build up down status logs migrate"
 	@echo "Server:  server-ts server-rs server-rs-build (switch between the TypeScript and the Rust server)"
+	@echo "Voice:   elevenlabs-server elevenlabs-server-build elevenlabs-server-status elevenlabs-server-test (ElevenLabs-compatible token server, elevenlabs.mk)"
 	@echo "Stack:   stack-up stack-down (Vaultwarden, then the browser stack; the filler is its own systemd unit)"
 
 # Create .env with random secrets if it does not exist yet (never overwrites).
@@ -88,6 +89,7 @@ stack-down:
 	$(MAKE) --no-print-directory vault-down
 
 -include voice.mk
+-include elevenlabs.mk
 -include cli.mk
 -include vault.mk
 -include $(BROWSER_STACK_DIR)/browser.mk

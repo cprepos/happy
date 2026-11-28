@@ -1,0 +1,33 @@
+# ElevenLabs-compatible conversation server (packages/elevenlabs-server): the token call the
+# ElevenLabs Swift SDK makes, plus a pass-through of LiveKit signaling (/rtc*) to wherever the
+# LiveKit compute runs (prep-air for now). Caddy serves it at
+# https://happy.girthbass.duckdns.org/elevenlabs/ (LAN/VPN only). Run via `make elevenlabs-server`
+# (elevenlabs.mk):
+#   docker compose -p elevenlabs-server -f compose.elevenlabs.yml --env-file .env up -d
+# The LiveKit key/secret are happy-server's (LIVEKIT_API_KEY/LIVEKIT_API_SECRET in .env); move the
+# LiveKit compute by setting ELEVENLABS_LIVEKIT_URL in .env.
+name: elevenlabs-server
+
+services:
+  elevenlabs-server:
+    build:
+      context: ../packages/elevenlabs-server
+    image: elevenlabs-server:local
+    container_name: elevenlabs-server
+    restart: unless-stopped
+    environment:
+      LIVEKIT_URL: ${ELEVENLABS_LIVEKIT_URL:-ws://192.168.2.56:7880}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?set in .env}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?set in .env}
+      ELEVENLABS_AGENTS: ${ELEVENLABS_AGENTS:-agent_happy_voice_el:happy-voice-el}
+      TOKEN_TTL_SECONDS: ${ELEVENLABS_TOKEN_TTL_SECONDS:-600}
+      RATE_LIMIT_PER_MINUTE: ${ELEVENLABS_RATE_LIMIT_PER_MINUTE:-30}
+      PORT: "8080"
+    ports:
+      - "127.0.0.1:${ELEVENLABS_SERVER_PORT:-3015}:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
