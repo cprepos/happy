@@ -11,6 +11,14 @@ an unknown type counts as an error here, though the SDK only logs it.
 
     python tests/e2e_elevenlabs_sdk.py --livekit ws://192.168.2.56:7880 [--scenario call|compaction]
 
+With --token-url (the ElevenLabs-compatible server, packages/elevenlabs-server) it does what the
+SDK does instead of minting: GET <token-url>?agent_id=…&source=swift_sdk&version=3.4.0 with no
+auth, and connects LiveKit through the same server (the token URL without
+/v1/convai/conversation/token, as ws/wss) unless --livekit is given:
+
+    python tests/e2e_elevenlabs_sdk.py \
+        --token-url https://happy.girthbass.duckdns.org/elevenlabs/v1/convai/conversation/token
+
 `call` (the default): a greeting-only turn (with an echo check), the four tool round trips, a
 barge-in, plain latency turns and a goodbye that ends with end_call.
 `compaction`: needs the worker running with a low trigger (VOICE_COMPACT_TRIGGER=12000,
@@ -35,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
+import jwt as pyjwt
 import numpy as np
 from livekit import api, rtc
 
@@ -250,6 +259,26 @@ def tool_result(name: str, params: dict[str, Any]) -> tuple[str, bool]:
     return json.dumps({"ok": False, "reason": f"unknown tool {name}"}, sort_keys=True), True
 
 
+def livekit_url_for(token_url: str) -> str:
+    """apiEndpoint -> websocketUrl: the server root, as ws(s)."""
+    base = token_url.split("?", 1)[0].removesuffix("/").removesuffix("/v1/convai/conversation/token")
+    return "wss://" + base[len("https://"):] if base.startswith("https://") else "ws://" + base.removeprefix("http://")
+
+
+async def fetch_sdk_token(token_url: str, agent_id: str) -> str:
+    """The SDK's one HTTP call (TokenService.fetchConversationToken): no auth, 200 + non-empty token."""
+    params = {"agent_id": agent_id, "source": "swift_sdk", "version": SDK_VERSION}
+    async with aiohttp.ClientSession() as http:
+        async with http.get(token_url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as r:
+            if r.status != 200:
+                raise SystemExit(f"token call failed: HTTP {r.status} {(await r.text())[:200]}")
+            body = await r.json(content_type=None)
+    token = body.get("token") if isinstance(body, dict) else None
+    if not isinstance(token, str) or not token:
+        raise SystemExit("token call returned no token")
+    return token
+
+
 async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--env", default=str(DEFAULT_ENV))
@@ -261,9 +290,13 @@ async def main() -> int:
     # e.g. "ssh prep-air tail -n 4000 happy/selfhost/mac-voice/logs/agent-el.log": read to see the swap
     ap.add_argument("--agent-log-cmd", default=os.environ.get("EL_AGENT_LOG_CMD"))
     ap.add_argument("--plant", default=PLANTED, help=argparse.SUPPRESS)
+    ap.add_argument("--token-url", default=None, help="fetch the token the SDK way from this apiEndpoint")
+    ap.add_argument("--agent-id", default="agent_happy_voice_el", help="agent_id sent with --token-url")
     args = ap.parse_args()
 
     env = load_env(Path(args.env))
+    if args.token_url and not args.livekit:
+        args.livekit = livekit_url_for(args.token_url)
     args.livekit = args.livekit or env.get("LIVEKIT_URL") or os.environ.get("LIVEKIT_URL") or "ws://127.0.0.1:7880"
     args.tts = args.tts or env.get("TTS_URL") or os.environ.get("TTS_URL") or "http://127.0.0.1:8880/v1"
     key, secret = env["LIVEKIT_API_KEY"], env["LIVEKIT_API_SECRET"]
@@ -277,7 +310,19 @@ async def main() -> int:
         print(f"synthesizing {len(wanted)} utterances with Kokoro ({args.voice})", flush=True)
         clips = {k: await synthesize(http, args.tts, UTTERANCES[k], args.voice) for k in wanted}
 
-    token = (
+    if args.token_url:
+        t_tok = time.time()
+        token = await fetch_sdk_token(args.token_url, args.agent_id)
+        claims = pyjwt.decode(token, options={"verify_signature": False})
+        room_name = claims.get("video", {}).get("room", "?")
+        dispatched = [a.get("agentName") for a in claims.get("roomConfig", {}).get("agents", [])]
+        print(f"token from {args.token_url} in {(time.time() - t_tok) * 1000:.0f} ms: room {room_name}, "
+              f"identity {claims.get('sub')}, agents {dispatched}, ttl {claims['exp'] - claims['nbf']}s; "
+              f"LiveKit via {args.livekit}", flush=True)
+        checks.check("token server dispatches the agent", dispatched == [args.agent_name], f"{dispatched}")
+    else:
+        token = None
+    token = token or (
         api.AccessToken(key, secret)
         .with_identity(identity)
         .with_name("E2E ElevenLabs SDK")

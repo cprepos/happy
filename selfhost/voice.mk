@@ -140,8 +140,11 @@ voice-agent-e2e: $(VOICE_ENV) voice-agent-venv
 
 # e.g. make voice-agent-e2e-el VOICE_AGENT_E2E_EL_ARGS="--livekit ws://192.168.2.56:7880"
 VOICE_AGENT_E2E_EL_ARGS ?=
+# VOICE_AGENT_E2E_EL_TOKEN_URL=<apiEndpoint> takes the token from the ElevenLabs-compatible server
+# the SDK way and connects LiveKit through it (make elevenlabs-server-e2e, elevenlabs.mk).
+VOICE_AGENT_E2E_EL_TOKEN_URL ?=
 voice-agent-e2e-el: $(VOICE_ENV) voice-agent-venv
-	"$(VOICE_AGENT_VENV)/bin/python" $(VOICE_AGENT_DIR)/tests/e2e_elevenlabs_sdk.py --env $(VOICE_ENV) $(VOICE_AGENT_E2E_EL_ARGS)
+	"$(VOICE_AGENT_VENV)/bin/python" $(VOICE_AGENT_DIR)/tests/e2e_elevenlabs_sdk.py --env $(VOICE_ENV) $(if $(VOICE_AGENT_E2E_EL_TOKEN_URL),--token-url $(VOICE_AGENT_E2E_EL_TOKEN_URL)) $(VOICE_AGENT_E2E_EL_ARGS)
 
 # Measures the speech-free lead Kokoro puts in front of a segment, per voice and text: where
 # happy_voice/tts_trim.py's thresholds come from. Needs the tts service up, nothing else.
