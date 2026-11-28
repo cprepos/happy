@@ -270,6 +270,7 @@ data class SessionMetadata(
     val machineId: String? = null,
     val claudeSessionId: String? = null,
     val codexThreadId: String? = null,
+    val agyConversationId: String? = null,
     val tools: List<String>? = null,
     val slashCommands: List<String>? = null,
     val mcpServers: List<McpServerStatus>? = null,
@@ -380,6 +381,7 @@ data class SessionMetadata(
             machineId = f.optional("machineId", Read.string),
             claudeSessionId = f.optional("claudeSessionId", Read.string),
             codexThreadId = f.optional("codexThreadId", Read.string),
+            agyConversationId = f.optional("agyConversationId", Read.string),
             tools = f.optional("tools", Read.arrayOf(Read.string)),
             slashCommands = f.optional("slashCommands", Read.arrayOf(Read.string)),
             mcpServers = f.optional(

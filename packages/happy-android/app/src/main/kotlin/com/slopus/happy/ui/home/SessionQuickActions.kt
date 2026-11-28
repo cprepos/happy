@@ -28,7 +28,7 @@ fun resumeAvailability(session: Session, machine: Machine?): ResumeAvailability 
     if (metadata.isRig() || metadata?.capabilities?.resume == false) return ResumeAvailability.Hidden
     if (session.isOnline) return ResumeAvailability.Hidden
     if (metadata?.machineId.isNullOrEmpty()) return ResumeAvailability.blocked(ResumeBlock.MissingMachine)
-    if (metadata.claudeSessionId.isNullOrEmpty() && metadata.codexThreadId.isNullOrEmpty()) {
+    if (metadata.claudeSessionId.isNullOrEmpty() && metadata.codexThreadId.isNullOrEmpty() && metadata.agyConversationId.isNullOrEmpty()) {
         return ResumeAvailability.blocked(ResumeBlock.MissingBackendId)
     }
     if (machine == null) return ResumeAvailability.blocked(ResumeBlock.SameMachineOnly)

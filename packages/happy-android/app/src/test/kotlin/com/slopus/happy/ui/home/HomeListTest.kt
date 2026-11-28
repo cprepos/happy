@@ -318,6 +318,19 @@ class HomeListTest {
         assertEquals(ResumeAvailability.Hidden, resumeAvailability(session("s", metadata = rigMetadata(), active = false), resumeMachine))
     }
 
+    @Test fun anAgyConversationIdIsEnoughToResume() {
+        val agy = session(
+            "s",
+            metadata = metadata {
+                put("machineId", "m1")
+                put("flavor", "agy")
+                put("agyConversationId", "conv-1")
+            },
+            active = false,
+        )
+        assertEquals(ResumeAvailability(true, true, null), resumeAvailability(agy, resumeMachine))
+    }
+
     @Test fun sessionMenuListsItsActionsInOrder() {
         val live = resumable(active = true) { put("path", "/repo") }
         assertEquals(

@@ -35,6 +35,14 @@ class SessionInfoTest {
         assertEquals("Set-Location -LiteralPath 'C:\\Users\\test\\project'; happy codex --resume 019ccca5", meta.resumeCommand())
     }
 
+    @Test fun agyResumeUsesTheConversationIdOnlyForAgySessions() {
+        val meta = metadata(path = "/tmp/project") { put("flavor", "agy"); put("agyConversationId", "conv-1") }
+        assertEquals("cd '/tmp/project' && happy agy --resume conv-1", meta.resumeCommand())
+        assertNull(metadata(path = "/tmp/project") { put("flavor", "agy") }.resumeCommand())
+        assertNull(metadata(path = "/tmp/project") { put("flavor", "agy"); put("agyConversationId", "") }.resumeCommand())
+        assertNull(metadata(path = "/tmp/project") { put("agyConversationId", "conv-1") }.resumeCommand())
+    }
+
     @Test fun bareResumeWithoutAPathAndNothingWithoutAnId() {
         assertEquals("happy claude --resume $claudeId", metadata(path = "") { put("flavor", "claude"); put("claudeSessionId", claudeId) }.resumeCommand())
         assertNull(metadata(path = "/tmp/project") { put("flavor", "claude") }.resumeCommand())
