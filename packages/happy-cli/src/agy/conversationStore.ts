@@ -1,10 +1,9 @@
 /**
  * Agy conversation store
  *
- * agy `--print` does not echo the conversation id, but it records the most recent
- * conversation per workspace in its cache file (keyed by cwd). Reading it back lets
- * us resume a specific conversation via `--conversation` instead of relying on the
- * cwd-scoped `--continue`.
+ * agy records the most recent conversation per workspace in its cache file (keyed
+ * by cwd). The backend pins the conversation agy's stream-json result names; this
+ * cache is only its fallback, for a first turn stopped before that result.
  */
 
 import { readFileSync, realpathSync } from 'node:fs';

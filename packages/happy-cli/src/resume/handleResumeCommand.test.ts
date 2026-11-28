@@ -90,6 +90,14 @@ function createReconnectableSession() {
     };
 }
 
+function createAgyReconnectableSession(agyConversationId?: string) {
+    const { codexThreadId: _codexThreadId, ...metadata } = createReconnectableSession().metadata;
+    return {
+        ...createReconnectableSession(),
+        metadata: { ...metadata, flavor: 'agy', agyConversationId },
+    };
+}
+
 beforeEach(() => {
     vi.clearAllMocks();
     mocks.mockExistsSync.mockReturnValue(true);
@@ -187,6 +195,63 @@ describe('buildResumeLaunch', () => {
         });
     });
 
+    it('builds an Antigravity resume command for the terminal', () => {
+        expect(buildResumeLaunch({
+            id: 'session-6',
+            active: false,
+            metadata: {
+                path: '/tmp/repo',
+                flavor: 'agy',
+                agyConversationId: '7f0c2b9e-1d2a-4c3b-9e8f-0a1b2c3d4e5f',
+                host: 'localhost',
+                homeDir: '/tmp',
+                happyHomeDir: '/tmp/.happy',
+                happyLibDir: '/tmp/happy',
+                happyToolsDir: '/tmp/happy/tools',
+            },
+        })).toEqual({
+            cwd: '/tmp/repo',
+            args: ['agy', '--resume', '7f0c2b9e-1d2a-4c3b-9e8f-0a1b2c3d4e5f'],
+        });
+    });
+
+    it('keeps the Antigravity session model across the resume', () => {
+        expect(buildResumeLaunch({
+            id: 'session-8',
+            active: false,
+            metadata: {
+                path: '/tmp/repo',
+                flavor: 'agy',
+                agyConversationId: 'conv-1',
+                currentModelCode: 'gemini-3-pro',
+                host: 'localhost',
+                homeDir: '/tmp',
+                happyHomeDir: '/tmp/.happy',
+                happyLibDir: '/tmp/happy',
+                happyToolsDir: '/tmp/happy/tools',
+            },
+        }, { startedBy: 'daemon' }).args).toEqual(['agy', '--resume', 'conv-1', '--model', 'gemini-3-pro', '--started-by', 'daemon']);
+    });
+
+    it('resumes an Antigravity session as Antigravity even when it carries another backend ID', () => {
+        expect(buildResumeLaunch({
+            id: 'session-7',
+            active: false,
+            metadata: {
+                path: '/tmp/repo',
+                flavor: 'agy',
+                agyConversationId: 'conv-1',
+                claudeSessionId: '93a9705e-bc6a-406d-8dce-8acc014dedbd',
+                codexThreadId: '019ccca5-726b-7c61-b914-16de27dfab6e',
+                host: 'localhost',
+                homeDir: '/tmp',
+                happyHomeDir: '/tmp/.happy',
+                happyLibDir: '/tmp/happy',
+                happyToolsDir: '/tmp/happy/tools',
+            },
+        }).args).toEqual(['agy', '--resume', 'conv-1']);
+    });
+
     it('refuses an Antigravity session that never recorded its conversation', () => {
         expect(() => buildResumeLaunch({
             id: 'session-5',
@@ -253,6 +318,36 @@ describe('handleResumeCommand', () => {
         const spawnedEnv = mocks.mockSpawnHappyCLI.mock.calls[0][1].env;
         expect(spawnedEnv).not.toHaveProperty('HAPPY_FORK_CODEX_THREAD_ID');
         expect(spawnedEnv).not.toHaveProperty('CODEX_THREAD_ID');
+    });
+
+    it('resumes an Antigravity session into the same Happy session', async () => {
+        const session = createAgyReconnectableSession('conv-1');
+        mocks.mockResolveLocalReconnectableSession.mockResolvedValue(session);
+
+        await handleResumeCommand(['session-1']);
+
+        expect(spawnHappyCLI).toHaveBeenCalledWith(['agy', '--resume', 'conv-1'], {
+            cwd: '/tmp/repo',
+            stdio: 'inherit',
+            env: expect.objectContaining({
+                HAPPY_RECONNECT_SESSION_ID: 'session-1',
+                HAPPY_RECONNECT_ENCRYPTION_KEY: 'AQIDBA==',
+                HAPPY_RECONNECT_ENCRYPTION_VARIANT: 'dataKey',
+                HAPPY_RECONNECT_SEQ: '42',
+                HAPPY_RECONNECT_METADATA_VERSION: '7',
+                HAPPY_RECONNECT_AGENT_STATE_VERSION: '9',
+            }),
+        });
+    });
+
+    it('does not spawn an Antigravity session that has no conversation ID', async () => {
+        const session = createAgyReconnectableSession();
+        mocks.mockResolveLocalReconnectableSession.mockResolvedValue(session);
+
+        await expect(handleResumeCommand(['session-1'])).rejects.toThrow(
+            'Happy session session-1 is missing its Antigravity conversation ID.',
+        );
+        expect(spawnHappyCLI).not.toHaveBeenCalled();
     });
 
     it('does not suggest happy-agent auth login when no local resume data or agent.key exists', async () => {

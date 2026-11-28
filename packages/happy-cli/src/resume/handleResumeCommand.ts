@@ -76,6 +76,11 @@ export function buildResumeLaunch(session: ResumableHappySession, options: Resum
             throw new Error(`Happy session ${session.id} is missing its Antigravity conversation ID.`);
         }
         const args = ['agy', '--resume', metadata.agyConversationId];
+        // agy keeps no model per conversation, so carry the session's own; an
+        // explicit `--model` appended later (the daemon's) still wins.
+        if (metadata.currentModelCode) {
+            args.push('--model', metadata.currentModelCode);
+        }
         if (options.startedBy) {
             args.push('--started-by', options.startedBy);
         }

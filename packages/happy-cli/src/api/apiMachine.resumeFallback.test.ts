@@ -103,6 +103,7 @@ describe('resume-happy-session fallback payload', () => {
         { seq: -1 },
         { metadata: { ...validFallback.metadata, claudeSessionId: {} } },
         { metadata: { ...validFallback.metadata, codexThreadId: 123 } },
+        { metadata: { ...validFallback.metadata, agyConversationId: 123 } },
         { metadata: { ...validFallback.metadata, flavor: [] } },
         { metadata: { ...validFallback.metadata, machineId: 'another-machine' } },
         { metadata: { ...validFallback.metadata, machineId: undefined } },

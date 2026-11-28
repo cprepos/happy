@@ -269,8 +269,8 @@ export const AGY_PRINT_TIMEOUT = '10m';
 
 /**
  * Path to agy's per-workspace conversation cache. agy records the most recent
- * conversation id for each cwd here; print mode does not echo the id, so this is
- * how we recover it for `--conversation`-based resume.
+ * conversation id for each cwd here. Only a fallback: the stream-json result
+ * names the conversation a turn used.
  */
 export const AGY_CONVERSATIONS_CACHE = join(
   os.homedir(),

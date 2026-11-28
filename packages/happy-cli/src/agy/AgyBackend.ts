@@ -1,15 +1,17 @@
 /**
  * Agy AgentBackend Implementation
  *
- * Custom AgentBackend that drives the agy (Antigravity) CLI. Unlike the ACP-based
- * backends, agy has no streaming-event protocol — its only non-interactive surface
- * is `agy --print "<prompt>"`, which streams the final answer as plain text and
- * exits. So this backend spawns one `agy --print` process per turn and maps:
+ * Custom AgentBackend that drives the agy (Antigravity) CLI. This backend spawns
+ * one `agy --print "<prompt>" --output-format stream-json` process per turn and
+ * maps:
  *
  *   spawn            → { type: 'status', status: 'running' }
- *   stdout chunk     → { type: 'model-output', textDelta }
+ *   result event     → { type: 'model-output', textDelta: result.response }
  *   exit code 0      → { type: 'status', status: 'idle' }
  *   exit code != 0   → { type: 'status', status: 'error', detail }
+ *
+ * The result event also names the conversation agy used, which the backend pins
+ * so later turns (and a resumed session) continue it.
  *
  * There are no tool-call or permission events: print mode is one-shot and governed
  * by the CLI flags (see cliArgs.ts) plus agy's own settings.json.
@@ -33,6 +35,9 @@ export type SpawnFn = typeof spawn;
 
 const MAX_AGY_ERROR_DETAIL_CHARS = 2_000;
 
+/** What agy prints to stderr, before starting a new conversation, for an unknown `--conversation` id. */
+const CONVERSATION_NOT_FOUND = /warning: conversation "([^"]+)" not found/;
+
 function cleanAgyErrorOutput(value: string): string {
   return value
     .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, '')
@@ -55,15 +60,24 @@ export interface AgyBackendOptions {
   log?: (msg: string) => void;
   /** Injectable spawn (defaults to node's child_process.spawn). */
   spawnFn?: SpawnFn;
-  /** Optional override for resolving the resume conversation id (tests). */
+  /**
+   * Reads the conversation agy last used in a cwd (its cache). Only a fallback,
+   * for a first turn stopped before agy's result names the conversation.
+   */
   resolveConversationId?: (cwd: string) => string | null;
   /**
    * agy conversation to continue from the first turn (a resumed session).
    * It comes from this session's own metadata, never from the cwd cache.
    */
   conversationId?: string;
-  /** Called once when a fresh session pins the conversation its first turn created. */
-  onConversationId?: (conversationId: string) => void;
+  /**
+   * Called when the backend pins a conversation: the one a fresh session's
+   * first turn created, or the one agy used instead of the conversation the
+   * turn asked for (`previousConversationId`), whose context is then lost.
+   */
+  onConversationId?: (conversationId: string, previousConversationId?: string) => void;
+  /** How often the cache is read while a fresh session's first turn runs. Defaults to 1s. */
+  cachePollMs?: number;
 }
 
 /** Parse an agy duration string ("10m", "30s", "1h") to milliseconds; defaults to 10m. */
@@ -81,13 +95,16 @@ export class AgyBackend implements AgentBackend {
   private readonly log: (msg: string) => void;
   private readonly spawnFn: SpawnFn;
   private readonly resolveConversationId: (cwd: string) => string | null;
-  private readonly onConversationId?: (conversationId: string) => void;
+  private readonly onConversationId?: (conversationId: string, previousConversationId?: string) => void;
+  private readonly cachePollMs: number;
 
   private permissionMode: PermissionMode;
   private model?: string;
   private effort?: string;
   private conversationId: string | null = null;
   private child: ChildProcess | null = null;
+  /** Reads the cache for the turn in flight, so a stop can pin before the kill. */
+  private checkTurnCache: (() => void) | null = null;
 
   constructor(opts: AgyBackendOptions) {
     this.cwd = opts.cwd;
@@ -99,6 +116,7 @@ export class AgyBackend implements AgentBackend {
     this.spawnFn = opts.spawnFn ?? spawn;
     this.resolveConversationId = opts.resolveConversationId ?? readAgyConversationId;
     this.onConversationId = opts.onConversationId;
+    this.cachePollMs = opts.cachePollMs ?? 1_000;
     this.conversationId = opts.conversationId ?? null;
   }
 
@@ -139,11 +157,39 @@ export class AgyBackend implements AgentBackend {
 
     this.emit({ type: 'status', status: 'running' });
 
-    // Until we have pinned our own conversation, snapshot the cwd cache so we can
-    // tell after the turn whether the entry is ours (changed → our turn wrote it)
-    // or a leftover from another session (unchanged → not ours to adopt).
-    const preTurnCacheId =
-      this.conversationId === null ? this.resolveConversationId(this.cwd) : null;
+    const requestedConversationId = this.conversationId;
+    // Set when agy reports that the conversation we asked for is gone.
+    let lostConversationId: string | null = null;
+    // The conversation agy's result event says this turn used.
+    let resultConversationId: string | null = null;
+    let resultError: string | null = null;
+
+    const pin = (cid: string) => {
+      if (cid === this.conversationId) return;
+      this.conversationId = cid;
+      // Asking for one conversation and getting another means agy started a
+      // new one: the earlier context is gone, and the caller should say so.
+      const lost = requestedConversationId !== null && cid !== requestedConversationId
+        ? requestedConversationId
+        : undefined;
+      this.log(lost
+        ? `agy used conversation ${cid} instead of ${lost}; pinned the new one`
+        : `pinned agy conversation ${cid}`);
+      this.onConversationId?.(cid, lost);
+    };
+
+    // Fallback for a fresh session's first turn: agy writes the cwd cache when
+    // the conversation starts, so a stop or restart before the result event
+    // still pins it. Only a change seen while our child runs is attributed to
+    // it. Best effort: a concurrent same-cwd agy writing in that window is
+    // adopted just the same, until this turn's result corrects it.
+    const watchCache = requestedConversationId === null;
+    const preTurnCacheId = watchCache ? this.resolveConversationId(this.cwd) : null;
+    const checkCache = () => {
+      if (this.conversationId !== null || resultConversationId) return;
+      const cid = this.resolveConversationId(this.cwd);
+      if (cid && cid !== preTurnCacheId) pin(cid);
+    };
 
     await new Promise<void>((resolve, reject) => {
       const child = this.spawnFn(resolveAgyBin(), args, {
@@ -160,21 +206,48 @@ export class AgyBackend implements AgentBackend {
       // Node can fire both 'error' and 'close' on spawn failure; act on the first only.
       let settled = false;
       let stderrTail = '';
+      let stdoutBuffer = '';
       const watchdog = setTimeout(() => {
         this.log(`agy turn exceeded ${this.printTimeout}; killing process`);
         child.kill('SIGKILL');
       }, parsePrintTimeoutMs(this.printTimeout) + 30_000);
+      const cachePoll = watchCache ? setInterval(checkCache, this.cachePollMs) : null;
+      this.checkTurnCache = watchCache ? checkCache : null;
       const cleanup = () => {
         clearTimeout(watchdog);
+        if (cachePoll) clearInterval(cachePoll);
         if (this.child === child) {
           this.child = null;
+          this.checkTurnCache = null;
         }
+      };
+
+      const handleLine = (line: string) => {
+        if (!line.trim()) return;
+        let event: { event?: unknown; result?: Record<string, unknown> };
+        try {
+          event = JSON.parse(line);
+        } catch {
+          // Not an event: an agy without stream-json prints the answer as text.
+          this.emit({ type: 'model-output', textDelta: `${line}\n` });
+          return;
+        }
+        if (event?.event !== 'result' || !event.result) return;
+        const { response, conversation_id: cid, error } = event.result;
+        if (typeof response === 'string' && response) {
+          this.emit({ type: 'model-output', textDelta: response });
+        }
+        if (typeof cid === 'string' && cid) resultConversationId = cid;
+        if (typeof error === 'string' && error) resultError = error;
       };
 
       child.stdout?.setEncoding('utf8');
       child.stdout?.on('data', (chunk: string) => {
-        if (chunk) {
-          this.emit({ type: 'model-output', textDelta: chunk });
+        stdoutBuffer += chunk;
+        let newline: number;
+        while ((newline = stdoutBuffer.indexOf('\n')) >= 0) {
+          handleLine(stdoutBuffer.slice(0, newline));
+          stdoutBuffer = stdoutBuffer.slice(newline + 1);
         }
       });
 
@@ -185,6 +258,17 @@ export class AgyBackend implements AgentBackend {
           this.log(`stderr: ${text}`);
         }
         stderrTail = `${stderrTail}${chunk}`.slice(-MAX_AGY_ERROR_DETAIL_CHARS * 2);
+        // agy answers a missing conversation by quietly starting a new one. Stop
+        // the turn instead, so the prompt never runs without the context the
+        // user expects, and say so.
+        const missing = requestedConversationId && !lostConversationId
+          ? CONVERSATION_NOT_FOUND.exec(stderrTail)?.[1]
+          : undefined;
+        if (missing && missing === requestedConversationId) {
+          lostConversationId = missing;
+          this.log(`agy conversation ${missing} not found; stopping the turn`);
+          child.kill('SIGTERM');
+        }
       });
 
       child.on('error', (err: Error) => {
@@ -202,23 +286,27 @@ export class AgyBackend implements AgentBackend {
         if (settled) return;
         settled = true;
         cleanup();
-        // Pin the conversation our first turn created so later turns resume it.
-        // Once pinned, never re-read the cache: another session in the same cwd
-        // may have updated it since, and adopting that id would cross-resume.
-        // Best effort while unpinned: any concurrent same-cwd write that differs
-        // from the pre-turn snapshot (another session's turn, or bare interactive
-        // agy) would be adopted just the same — agy doesn't echo the id it
-        // created, so we cannot attribute the cache entry more precisely.
-        // Deliberately runs on failed turns too: agy may have created the
-        // conversation before the turn errored, and resuming it keeps context.
-        if (this.conversationId === null) {
-          const cid = this.resolveConversationId(this.cwd);
-          if (cid && cid !== preTurnCacheId) {
-            this.conversationId = cid;
-            this.log(`pinned agy conversation ${cid}`);
-            this.onConversationId?.(cid);
-          } else {
-            this.log('agy conversation cache unchanged after turn; not adopting (will retry next turn)');
+        handleLine(stdoutBuffer);
+        stdoutBuffer = '';
+
+        if (lostConversationId) {
+          // Forget the dead id: the next turn starts a new conversation and pins
+          // it like a fresh session's first turn.
+          this.conversationId = null;
+          const detail = `Antigravity conversation ${lostConversationId} no longer exists, so its earlier context is not available. Your next message starts a new conversation.`;
+          this.emit({ type: 'status', status: 'error', detail });
+          reject(new Error(detail));
+          return;
+        }
+
+        // Pin the conversation agy says it used, on failed turns too: agy may
+        // have created it before the turn errored, and resuming it keeps context.
+        if (resultConversationId) {
+          pin(resultConversationId);
+        } else if (watchCache) {
+          checkCache();
+          if (this.conversationId === null) {
+            this.log('agy named no conversation and the cache is unchanged; not pinning (will retry next turn)');
           }
         }
 
@@ -226,9 +314,9 @@ export class AgyBackend implements AgentBackend {
           this.emit({ type: 'status', status: 'idle' });
           resolve();
         } else {
-          const stderrDetail = cleanAgyErrorOutput(stderrTail);
-          const detail = stderrDetail
-            ? `agy exited with code ${code ?? 'null'}: ${stderrDetail}`
+          const errorDetail = resultError ?? cleanAgyErrorOutput(stderrTail);
+          const detail = errorDetail
+            ? `agy exited with code ${code ?? 'null'}: ${errorDetail}`
             : `agy exited with code ${code ?? 'null'}`;
           this.emit({ type: 'status', status: 'error', detail });
           reject(new Error(detail));
@@ -239,6 +327,8 @@ export class AgyBackend implements AgentBackend {
 
   async cancel(_sessionId?: SessionId): Promise<void> {
     if (this.child) {
+      // Pin before the kill, so a stopped first turn stays resumable.
+      this.checkTurnCache?.();
       this.child.kill('SIGTERM');
       this.child = null;
     }

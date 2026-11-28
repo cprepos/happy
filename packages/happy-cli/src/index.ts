@@ -35,6 +35,7 @@ import { extractNoSandboxFlag } from './utils/sandboxFlags'
 import { handleResumeCommand } from '@/resume/handleResumeCommand'
 import { ensureDaemonRunning } from './daemon/ensureDaemonRunning'
 import { handleCodexCommand } from './commands/codexCommand'
+import { handleAgyCommand } from './commands/agyCommand'
 import { sanitizeSessionEnvironment } from './daemon/sessionEnvironment'
 
 
@@ -446,54 +447,7 @@ Conversation history is preserved on the server, but in-flight tool calls are in
     return;
   } else if (subcommand === 'agy') {
     try {
-      const { runAgy } = await import('@/agy/runAgy');
-
-      let startedBy: 'daemon' | 'terminal' | undefined = undefined;
-      let verbose = false;
-      let model: string | undefined = undefined;
-      let effort: string | undefined = undefined;
-      let permissionMode: StartOptions['permissionMode'] = undefined;
-      let resumeConversationId: string | undefined = undefined;
-      for (let i = 1; i < args.length; i++) {
-        if (args[i] === '--started-by' && i + 1 < args.length) {
-          startedBy = args[++i] as 'daemon' | 'terminal';
-        } else if (args[i] === '--resume') {
-          if (i + 1 >= args.length || args[i + 1].startsWith('-')) {
-            throw new Error('happy agy --resume needs an agy conversation id');
-          }
-          resumeConversationId = args[++i];
-        } else if (args[i] === '--happy-starting-mode' && i + 1 < args.length) {
-          i++;
-        } else if (args[i] === '--verbose') {
-          verbose = true;
-        } else if (args[i] === '--model' && i + 1 < args.length) {
-          model = args[++i];
-        } else if (args[i] === '--effort' && i + 1 < args.length) {
-          effort = args[++i];
-        } else if (args[i] === '--permission-mode' && i + 1 < args.length) {
-          const value = args[++i];
-          if (isPermissionMode(value)) {
-            permissionMode = value;
-          } else {
-            console.warn(chalk.yellow(`Ignoring unknown --permission-mode '${value}'`));
-          }
-        } else if (args[i] === '--yolo' || args[i] === '--dangerously-skip-permissions') {
-          permissionMode = 'bypassPermissions';
-        }
-      }
-
-      const { credentials } = await authAndSetupMachineIfNeeded();
-      await ensureDaemonRunning()
-
-      await runAgy({
-        credentials,
-        startedBy,
-        verbose,
-        model,
-        effort,
-        permissionMode,
-        resumeConversationId,
-      });
+      await handleAgyCommand(args.slice(1));
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
       if (process.env.DEBUG) {
@@ -761,6 +715,8 @@ ${chalk.bold('Usage:')}
 ${chalk.bold('Examples:')}
   happy                    Start session
   happy resume cmmij8      Resume a previous session by Happy session ID
+  happy agy --resume <conversation-id>
+                           Continue an agy conversation in a new session
   happy --yolo             Start with bypassing permissions
                             happy sugar for --dangerously-skip-permissions
   happy --chrome           Enable Chrome browser access for this session

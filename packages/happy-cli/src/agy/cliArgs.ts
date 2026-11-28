@@ -61,6 +61,58 @@ export function buildAgyArgs(opts: BuildAgyArgsOptions): string[] {
     args.push('--print-timeout', opts.printTimeout);
   }
 
+  // NDJSON events; the final `result` names the conversation agy used.
+  args.push('--output-format', 'stream-json');
   args.push('--print', opts.prompt);
   return args;
+}
+
+/**
+ * Pull `--resume <conversation-id>` (or `-r`, or `--resume=<id>`) out of the
+ * `happy agy` argv. The id is the agy conversation a previous session pinned,
+ * as stored in its `agyConversationId` metadata.
+ */
+export function extractAgyResumeFlag(args: string[]): { resumeConversationId: string | null; args: string[] } {
+  const remainingArgs: string[] = [];
+  let resumeConversationId: string | null = null;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+
+    if (arg === '--resume' || arg === '-r') {
+      if (resumeConversationId !== null) {
+        throw new Error('Agy resume flag can only be provided once.');
+      }
+
+      const nextArg = args[i + 1]?.trim();
+      if (!nextArg || nextArg.startsWith('-')) {
+        throw new Error('Agy resume requires a conversation ID: happy agy --resume <conversation-id>');
+      }
+
+      resumeConversationId = nextArg;
+      i++;
+      continue;
+    }
+
+    if (arg.startsWith('--resume=')) {
+      if (resumeConversationId !== null) {
+        throw new Error('Agy resume flag can only be provided once.');
+      }
+
+      const value = arg.slice('--resume='.length).trim();
+      if (!value) {
+        throw new Error('Agy resume requires a conversation ID: happy agy --resume <conversation-id>');
+      }
+
+      resumeConversationId = value;
+      continue;
+    }
+
+    remainingArgs.push(arg);
+  }
+
+  return {
+    resumeConversationId,
+    args: remainingArgs,
+  };
 }

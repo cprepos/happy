@@ -34,6 +34,7 @@ import { AgyDisplay } from '@/ui/ink/AgyDisplay';
 import type { AgentMessage } from '@/agent/core';
 import { normalizeRemotePermissionMode } from '@/claude/utils/permissionMode';
 import { AgyBackend } from './AgyBackend';
+import { checkAgyConversation } from './conversationCheck';
 import {
   DEFAULT_AGY_EFFORT,
   DEFAULT_AGY_MODEL,
@@ -109,8 +110,11 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
   const reconnectMetadataVersion = process.env.HAPPY_RECONNECT_METADATA_VERSION;
   const reconnectAgentStateVersion = process.env.HAPPY_RECONNECT_AGENT_STATE_VERSION;
 
+  // Reattach only with the full environment; anything less starts a new session.
+  const isReconnect = Boolean(reconnectSessionId && reconnectKeyBase64 && reconnectVariant);
+
   let response: ApiSession | null;
-  if (reconnectSessionId && reconnectKeyBase64 && reconnectVariant) {
+  if (isReconnect && reconnectSessionId && reconnectKeyBase64 && reconnectVariant) {
     log(`Reconnecting to existing session ${reconnectSessionId}`);
     response = {
       id: reconnectSessionId,
@@ -143,7 +147,7 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
   session = initialSession;
 
   // On reconnect, un-archive the session and skip replaying old messages.
-  if (reconnectSessionId) {
+  if (isReconnect) {
     session.suppressNextArchiveSignal();
     session.skipExistingMessages();
     session.updateMetadata((meta) => ({
@@ -182,7 +186,7 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
     log,
     conversationId: opts.resumeConversationId,
     // Persist the conversation so the session can be resumed after a restart.
-    onConversationId: (conversationId) => {
+    onConversationId: (conversationId, previousConversationId) => {
       try {
         session.updateMetadata((curr) => ({
           ...curr,
@@ -190,6 +194,11 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
         }));
       } catch (error) {
         logger.debug('[agy] Failed to record the agy conversation id:', error);
+      }
+      if (previousConversationId) {
+        const notice = `Antigravity conversation ${previousConversationId} could not be resumed, so agy started a new one (${conversationId}). The earlier context is not available to the agent.`;
+        messageBuffer.addMessage(notice, 'status');
+        session.sendSessionEvent({ type: 'message', message: notice });
       }
     },
   });
@@ -389,6 +398,33 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
     session.keepAlive(thinking, 'remote');
   }, 2000);
 
+  /**
+   * Before the first turn, ask agy whether the conversation still exists, and
+   * fail like a Codex resume does when it is gone. An unclear answer resumes
+   * anyway: the turn itself reports a missing conversation.
+   */
+  async function announceResumedConversation(conversationId: string) {
+    const check = await checkAgyConversation(conversationId);
+    if (check.status === 'missing') {
+      const message = `Antigravity conversation ${conversationId} no longer exists, so it cannot be resumed.`;
+      messageBuffer.addMessage(message, 'status');
+      session.sendSessionEvent({ type: 'message', message });
+      throw new Error(message);
+    }
+    if (check.status === 'unknown') {
+      log(`Could not check conversation ${conversationId} before resuming: ${check.reason}`);
+    } else if (check.cwd && check.cwd !== process.cwd()) {
+      const notice = `Conversation ${conversationId} was started in ${check.cwd}, resuming it in ${process.cwd()}`;
+      log(notice);
+      messageBuffer.addMessage(notice, 'status');
+    }
+    messageBuffer.addMessage(`Resumed conversation ${conversationId}`, 'status');
+    session.sendSessionEvent({
+      type: 'message',
+      message: `Resumed Antigravity conversation ${conversationId}`,
+    });
+  }
+
   async function handleAbort() {
     log('Abort requested');
     try {
@@ -412,6 +448,10 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
   try {
     await backend.startSession();
     log('Backend ready');
+
+    if (opts.resumeConversationId) {
+      await announceResumedConversation(opts.resumeConversationId);
+    }
 
     while (!shouldExit) {
       const waitSignal = abortController.signal;

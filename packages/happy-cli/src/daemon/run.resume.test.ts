@@ -143,6 +143,29 @@ describe('daemon resume fallback', () => {
     expect(mocks.spawn).not.toHaveBeenCalled();
   });
 
+  it('does not fill a tracked Antigravity conversation ID from a different provider fallback', async () => {
+    const agyMetadata = { path: '/project', machineId: 'machine-1', flavor: 'agy' };
+    mocks.persisted = { 'old-session': { ...fallback, metadata: agyMetadata } };
+    await boot();
+    expect(await mocks.handlers.resumeSession('old-session', { fallback: { ...fallback, metadata: { ...agyMetadata, claudeSessionId: 'claude-other' } } }))
+      .toMatchObject({ type: 'error', errorMessage: expect.stringContaining('missing its Antigravity conversation ID') });
+    expect(mocks.spawn).not.toHaveBeenCalled();
+  });
+
+  it('resumes an Antigravity session into the same session with the daemon launch args', async () => {
+    await boot();
+    const agyMetadata = { path: '/project', machineId: 'machine-1', flavor: 'agy', agyConversationId: 'agy-conversation-old' };
+    expect(await mocks.handlers.resumeSession('old-session', { fallback: { ...fallback, metadata: agyMetadata } }))
+      .toEqual({ type: 'success', sessionId: 'old-session' });
+    expect(mocks.spawn).toHaveBeenCalledWith(
+      ['agy', '--resume', 'agy-conversation-old', '--started-by', 'daemon'],
+      expect.objectContaining({ cwd: '/project', env: expect.objectContaining({
+        HAPPY_RECONNECT_SESSION_ID: 'old-session', HAPPY_RECONNECT_ENCRYPTION_KEY: fallback.encryptionKey,
+        HAPPY_RECONNECT_ENCRYPTION_VARIANT: 'dataKey', HAPPY_RECONNECT_SEQ: '12',
+      }) }),
+    );
+  });
+
   it('preserves live tracked metadata and encryption over fallback', async () => {
     mocks.persisted = { 'old-session': { ...fallback, metadata: { ...metadata, claudeSessionId: 'tracked-id' }, encryptionVariant: 'legacy' } };
     await boot();
@@ -155,6 +178,24 @@ describe('daemon resume fallback', () => {
     await boot();
     const result = await mocks.handlers.resumeSession('old-session', { fallback: { ...fallback, metadata: { ...metadata, claudeSessionId: undefined } } });
     expect(result).toMatchObject({ type: 'error', errorMessage: expect.stringContaining('missing its Claude session ID') });
+    expect(mocks.spawn).not.toHaveBeenCalled();
+  });
+
+  it('lets the model the app asks for override the Antigravity session model on resume', async () => {
+    await boot();
+    const agyMetadata = { path: '/project', machineId: 'machine-1', flavor: 'agy', agyConversationId: 'agy-conversation-old', currentModelCode: 'session-model' };
+    expect(await mocks.handlers.resumeSession('old-session', { fallback: { ...fallback, metadata: agyMetadata }, model: 'app-model' }))
+      .toEqual({ type: 'success', sessionId: 'old-session' });
+    const args: string[] = mocks.spawn.mock.calls[0][0];
+    // The agy argument parser takes the last --model.
+    expect(args.lastIndexOf('--model')).toBeGreaterThan(args.indexOf('session-model'));
+    expect(args[args.lastIndexOf('--model') + 1]).toBe('app-model');
+  });
+
+  it('fails without spawning when an Antigravity session has no conversation ID anywhere', async () => {
+    await boot();
+    const result = await mocks.handlers.resumeSession('old-session', { fallback: { ...fallback, metadata: { path: '/project', machineId: 'machine-1', flavor: 'agy' } } });
+    expect(result).toMatchObject({ type: 'error', errorMessage: expect.stringContaining('missing its Antigravity conversation ID') });
     expect(mocks.spawn).not.toHaveBeenCalled();
   });
 
