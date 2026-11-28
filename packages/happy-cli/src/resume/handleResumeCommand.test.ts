@@ -167,6 +167,42 @@ describe('buildResumeLaunch', () => {
         });
     });
 
+    it('builds an Antigravity resume command for the daemon', () => {
+        expect(buildResumeLaunch({
+            id: 'session-4',
+            active: false,
+            metadata: {
+                path: '/tmp/repo',
+                flavor: 'agy',
+                agyConversationId: '7f0c2b9e-1d2a-4c3b-9e8f-0a1b2c3d4e5f',
+                host: 'localhost',
+                homeDir: '/tmp',
+                happyHomeDir: '/tmp/.happy',
+                happyLibDir: '/tmp/happy',
+                happyToolsDir: '/tmp/happy/tools',
+            },
+        }, { startedBy: 'daemon', claudeStartingMode: 'remote' })).toEqual({
+            cwd: '/tmp/repo',
+            args: ['agy', '--resume', '7f0c2b9e-1d2a-4c3b-9e8f-0a1b2c3d4e5f', '--started-by', 'daemon'],
+        });
+    });
+
+    it('refuses an Antigravity session that never recorded its conversation', () => {
+        expect(() => buildResumeLaunch({
+            id: 'session-5',
+            active: false,
+            metadata: {
+                path: '/tmp/repo',
+                flavor: 'agy',
+                host: 'localhost',
+                homeDir: '/tmp',
+                happyHomeDir: '/tmp/.happy',
+                happyLibDir: '/tmp/happy',
+                happyToolsDir: '/tmp/happy/tools',
+            },
+        })).toThrow('Happy session session-5 is missing its Antigravity conversation ID.');
+    });
+
     it('rejects unsupported flavors', () => {
         expect(() => buildResumeLaunch({
             id: 'session-3',

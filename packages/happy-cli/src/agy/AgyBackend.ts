@@ -57,6 +57,13 @@ export interface AgyBackendOptions {
   spawnFn?: SpawnFn;
   /** Optional override for resolving the resume conversation id (tests). */
   resolveConversationId?: (cwd: string) => string | null;
+  /**
+   * agy conversation to continue from the first turn (a resumed session).
+   * It comes from this session's own metadata, never from the cwd cache.
+   */
+  conversationId?: string;
+  /** Called once when a fresh session pins the conversation its first turn created. */
+  onConversationId?: (conversationId: string) => void;
 }
 
 /** Parse an agy duration string ("10m", "30s", "1h") to milliseconds; defaults to 10m. */
@@ -74,6 +81,7 @@ export class AgyBackend implements AgentBackend {
   private readonly log: (msg: string) => void;
   private readonly spawnFn: SpawnFn;
   private readonly resolveConversationId: (cwd: string) => string | null;
+  private readonly onConversationId?: (conversationId: string) => void;
 
   private permissionMode: PermissionMode;
   private model?: string;
@@ -90,6 +98,8 @@ export class AgyBackend implements AgentBackend {
     this.log = opts.log ?? (() => {});
     this.spawnFn = opts.spawnFn ?? spawn;
     this.resolveConversationId = opts.resolveConversationId ?? readAgyConversationId;
+    this.onConversationId = opts.onConversationId;
+    this.conversationId = opts.conversationId ?? null;
   }
 
   /** Update the permission mode applied to subsequent turns. */
@@ -112,7 +122,8 @@ export class AgyBackend implements AgentBackend {
     // Deliberately do NOT seed from the cwd conversation cache: it holds whatever
     // conversation last ran in this cwd — possibly another live session's — so
     // seeding would cross-resume it. A fresh session starts a fresh conversation;
-    // resuming a specific one across restarts needs explicit id plumbing (follow-up).
+    // a resumed one continues the id it was given (`conversationId`), which comes
+    // from its own persisted metadata.
     return { sessionId: this.cwd };
   }
 
@@ -205,6 +216,7 @@ export class AgyBackend implements AgentBackend {
           if (cid && cid !== preTurnCacheId) {
             this.conversationId = cid;
             this.log(`pinned agy conversation ${cid}`);
+            this.onConversationId?.(cid);
           } else {
             this.log('agy conversation cache unchanged after turn; not adopting (will retry next turn)');
           }

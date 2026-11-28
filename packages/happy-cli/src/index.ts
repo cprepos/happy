@@ -453,9 +453,15 @@ Conversation history is preserved on the server, but in-flight tool calls are in
       let model: string | undefined = undefined;
       let effort: string | undefined = undefined;
       let permissionMode: StartOptions['permissionMode'] = undefined;
+      let resumeConversationId: string | undefined = undefined;
       for (let i = 1; i < args.length; i++) {
         if (args[i] === '--started-by' && i + 1 < args.length) {
           startedBy = args[++i] as 'daemon' | 'terminal';
+        } else if (args[i] === '--resume') {
+          if (i + 1 >= args.length || args[i + 1].startsWith('-')) {
+            throw new Error('happy agy --resume needs an agy conversation id');
+          }
+          resumeConversationId = args[++i];
         } else if (args[i] === '--happy-starting-mode' && i + 1 < args.length) {
           i++;
         } else if (args[i] === '--verbose') {
@@ -486,6 +492,7 @@ Conversation history is preserved on the server, but in-flight tool calls are in
         model,
         effort,
         permissionMode,
+        resumeConversationId,
       });
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')

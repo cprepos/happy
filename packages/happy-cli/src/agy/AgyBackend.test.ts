@@ -296,6 +296,89 @@ describe('AgyBackend', () => {
     }
   });
 
+  it('continues a resumed conversation from the first turn and never re-pins it', async () => {
+    const spawnCalls: string[][] = [];
+    let current = makeFakeChild();
+    const spawnFn = vi.fn((_bin: string, args: string[]) => {
+      spawnCalls.push(args);
+      return current.child;
+    }) as unknown as SpawnFn;
+
+    // The cwd cache names another session's conversation; the resumed id wins.
+    const pinned: string[] = [];
+    const backend = new AgyBackend({
+      cwd: '/work',
+      permissionMode: 'default',
+      spawnFn,
+      conversationId: 'resumed-cid',
+      resolveConversationId: () => 'other-session-cid',
+      onConversationId: (id) => pinned.push(id),
+    });
+
+    await backend.startSession();
+
+    for (const prompt of ['first', 'second']) {
+      current = makeFakeChild();
+      const turn = backend.sendPrompt('/work', prompt);
+      current.child.emit('close', 0);
+      await turn;
+    }
+
+    for (const args of spawnCalls) {
+      const idx = args.indexOf('--conversation');
+      expect(idx).toBeGreaterThanOrEqual(0);
+      expect(args[idx + 1]).toBe('resumed-cid');
+    }
+    expect(pinned).toEqual([]);
+  });
+
+  it('reports a freshly pinned conversation once, so it can be persisted', async () => {
+    let current = makeFakeChild();
+    const spawnFn = vi.fn(() => current.child) as unknown as SpawnFn;
+
+    let recorded: string | null = 'stale-cid';
+    const pinned: string[] = [];
+    const backend = new AgyBackend({
+      cwd: '/work',
+      permissionMode: 'default',
+      spawnFn,
+      resolveConversationId: () => recorded,
+      onConversationId: (id) => pinned.push(id),
+    });
+
+    const t1 = backend.sendPrompt('/work', 'first');
+    recorded = 'new-cid';
+    current.child.emit('close', 0);
+    await t1;
+
+    current = makeFakeChild();
+    const t2 = backend.sendPrompt('/work', 'second');
+    recorded = 'someone-else-cid';
+    current.child.emit('close', 0);
+    await t2;
+
+    expect(pinned).toEqual(['new-cid']);
+  });
+
+  it('does not report the stale cwd entry it refused to adopt', async () => {
+    const { child } = makeFakeChild();
+    const spawnFn = vi.fn(() => child) as unknown as SpawnFn;
+    const pinned: string[] = [];
+    const backend = new AgyBackend({
+      cwd: '/work',
+      permissionMode: 'default',
+      spawnFn,
+      resolveConversationId: () => 'stale-cid',
+      onConversationId: (id) => pinned.push(id),
+    });
+
+    const turn = backend.sendPrompt('/work', 'first');
+    child.emit('close', 0);
+    await turn;
+
+    expect(pinned).toEqual([]);
+  });
+
   it('emits only one error when error is followed by close (no double-emit)', async () => {
     const { child } = makeFakeChild();
     const spawnFn = vi.fn(() => child) as unknown as SpawnFn;

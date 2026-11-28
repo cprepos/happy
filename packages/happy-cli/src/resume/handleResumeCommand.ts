@@ -40,7 +40,10 @@ export function parseResumeCommandArgs(args: string[]): { showHelp: boolean; ses
     };
 }
 
-function resolveFlavor(metadata: Metadata): 'codex' | 'claude' | null {
+function resolveFlavor(metadata: Metadata): 'codex' | 'claude' | 'agy' | null {
+    if (metadata.flavor === 'agy') {
+        return 'agy';
+    }
     if (metadata.flavor === 'codex' || metadata.codexThreadId) {
         return 'codex';
     }
@@ -59,6 +62,20 @@ export function buildResumeLaunch(session: ResumableHappySession, options: Resum
             throw new Error(`Happy session ${session.id} is missing its Codex thread ID.`);
         }
         const args = ['codex', '--resume', metadata.codexThreadId];
+        if (options.startedBy) {
+            args.push('--started-by', options.startedBy);
+        }
+        return {
+            cwd: metadata.path,
+            args,
+        };
+    }
+
+    if (flavor === 'agy') {
+        if (!metadata.agyConversationId) {
+            throw new Error(`Happy session ${session.id} is missing its Antigravity conversation ID.`);
+        }
+        const args = ['agy', '--resume', metadata.agyConversationId];
         if (options.startedBy) {
             args.push('--started-by', options.startedBy);
         }

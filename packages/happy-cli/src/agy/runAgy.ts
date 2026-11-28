@@ -4,6 +4,8 @@
  * Entry point for agy (Antigravity CLI) agent sessions, following the runOpenClaw.ts
  * pattern. The daemon spawns this as:
  *   `node dist/index.mjs agy --happy-starting-mode remote --started-by daemon`
+ * and, to resume a session, as `agy --resume <agy conversation id>` with the
+ * HAPPY_RECONNECT_* environment of the Happy session it reattaches to.
  *
  * agy is a plain-text streaming CLI (no ACP), so this drives an AgyBackend that
  * spawns `agy --print` per turn, and forwards its AgentMessage stream through the
@@ -24,7 +26,7 @@ import { initialMachineMetadata } from '@/daemon/run';
 import { createSessionMetadata } from '@/utils/createSessionMetadata';
 import { setupOfflineReconnection } from '@/utils/setupOfflineReconnection';
 import { notifyDaemonSessionStarted } from '@/daemon/controlClient';
-import { encodeBase64 } from '@/api/encryption';
+import { encodeBase64, decodeBase64 } from '@/api/encryption';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
 import { connectionState } from '@/utils/serverConnectionErrors';
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
@@ -42,7 +44,7 @@ import {
   pickDefaultAgyModel,
   resolveAgyModelName,
 } from './constants';
-import type { PermissionMode } from '@/api/types';
+import type { PermissionMode, Session as ApiSession } from '@/api/types';
 
 export interface RunAgyOptions {
   credentials: Credentials;
@@ -51,6 +53,8 @@ export interface RunAgyOptions {
   model?: string;
   effort?: string;
   permissionMode?: PermissionMode;
+  /** agy conversation id to continue (`happy agy --resume <id>`). */
+  resumeConversationId?: string;
 }
 
 export async function runAgy(opts: RunAgyOptions): Promise<void> {
@@ -90,7 +94,37 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
   });
   metadata.models = availableModels;
   metadata.currentModelCode = selectedModel;
-  const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
+  // A resumed session records the conversation it continues from the start:
+  // the backend only reports conversations it pins itself, so without this the
+  // id would be lost after one resume.
+  if (opts.resumeConversationId) {
+    metadata.agyConversationId = opts.resumeConversationId;
+  }
+
+  // Check for session reconnection env vars (set by the daemon and `happy resume`)
+  const reconnectSessionId = process.env.HAPPY_RECONNECT_SESSION_ID;
+  const reconnectKeyBase64 = process.env.HAPPY_RECONNECT_ENCRYPTION_KEY;
+  const reconnectVariant = process.env.HAPPY_RECONNECT_ENCRYPTION_VARIANT as 'legacy' | 'dataKey' | undefined;
+  const reconnectSeq = process.env.HAPPY_RECONNECT_SEQ;
+  const reconnectMetadataVersion = process.env.HAPPY_RECONNECT_METADATA_VERSION;
+  const reconnectAgentStateVersion = process.env.HAPPY_RECONNECT_AGENT_STATE_VERSION;
+
+  let response: ApiSession | null;
+  if (reconnectSessionId && reconnectKeyBase64 && reconnectVariant) {
+    log(`Reconnecting to existing session ${reconnectSessionId}`);
+    response = {
+      id: reconnectSessionId,
+      seq: parseInt(reconnectSeq || '0', 10),
+      encryptionKey: decodeBase64(reconnectKeyBase64),
+      encryptionVariant: reconnectVariant,
+      metadata,
+      metadataVersion: parseInt(reconnectMetadataVersion || '0', 10),
+      agentState: state,
+      agentStateVersion: parseInt(reconnectAgentStateVersion || '0', 10),
+    };
+  } else {
+    response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
+  }
   if (response) {
     log(`Happy Session ID: ${response.id}`);
   }
@@ -107,6 +141,17 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
     },
   });
   session = initialSession;
+
+  // On reconnect, un-archive the session and skip replaying old messages.
+  if (reconnectSessionId) {
+    session.suppressNextArchiveSignal();
+    session.skipExistingMessages();
+    session.updateMetadata((meta) => ({
+      ...meta,
+      lifecycleState: 'running',
+      archivedBy: undefined,
+    }));
+  }
 
   if (response) {
     try {
@@ -135,6 +180,18 @@ export async function runAgy(opts: RunAgyOptions): Promise<void> {
     model: selectedModel,
     effort: selectedEffort,
     log,
+    conversationId: opts.resumeConversationId,
+    // Persist the conversation so the session can be resumed after a restart.
+    onConversationId: (conversationId) => {
+      try {
+        session.updateMetadata((curr) => ({
+          ...curr,
+          agyConversationId: conversationId,
+        }));
+      } catch (error) {
+        logger.debug('[agy] Failed to record the agy conversation id:', error);
+      }
+    },
   });
 
   // Terminal UI (only with a real TTY; the daemon runs headless).
