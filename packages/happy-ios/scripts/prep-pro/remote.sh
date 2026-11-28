@@ -9,6 +9,8 @@
 #   make ios-fast-runs                 list recent runs
 # COMMIT defaults to HEAD of this repo. Other knobs are passed through to the
 # Mac scripts: WORKERS CLEAN CACHE DEVICE RETRY KEEP_SIMS WAIT_FOREIGN WAIT_MAX.
+# Device builds take SELFHOST_CALL_TOKEN_URL SELFHOST_CALL_LIVEKIT_URL
+# SELFHOST_CALL_AGENT_ID here, on this side (scripts/call-server-plist.sh).
 set -euo pipefail
 
 HOST=${HOST:-prep-pro}
@@ -17,7 +19,7 @@ REPO=$(git -C "$HERE" rev-parse --show-toplevel)
 SSH=(ssh -o BatchMode=yes -o ServerAliveInterval=30 "$HOST")
 RHF='happy-fast'   # relative to the Mac home
 
-usage() { sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 passthrough_env() {
   local out=() v
@@ -57,6 +59,17 @@ open(os.path.join(p, "App/Happy.entitlements"), "w").write(
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
     '<plist version="1.0">\n<dict/>\n</plist>\n')
 PY
+    # The call goes to our own ElevenLabs-compatible server, with its agent
+    # (SELFHOST_CALL_* in scripts/call-server-plist.sh), so Preview's
+    # "Require the voice agent" check passes on the agent ID itself.
+    local variant info
+    for variant in Development Preview Production; do
+      info="$stage/packages/happy-ios/App/Info-$variant.plist"
+      if ! "$HERE/../call-server-plist.sh" < "$info" > "$info.call"; then
+        echo "could not add the call server to Info-$variant.plist" >&2; exit 1
+      fi
+      mv "$info.call" "$info"
+    done
   fi
   "${SSH[@]}" "mkdir -p $RHF/bin $RHF/runs $RHF/trees/$purpose"
   rsync -rlc --delete -e "ssh -o BatchMode=yes" "$HERE/mac" "$HERE/serial-tests.txt" "$HOST:$RHF/bin/"

@@ -124,6 +124,7 @@ final class SelfHostBuildTests: XCTestCase {
             let changed: Set<String> = [
                 "CFBundleDisplayName", "NSCameraUsageDescription", "NSLocalNetworkUsageDescription",
                 "UIBackgroundModes", ServerConfig.bakedServerURLInfoKey, SelfHostBuild.pushDisabledInfoKey,
+                "HappyCallAgentID", "HappyCallTokenURL", "HappyCallLiveKitURL",
             ]
             XCTAssertEqual(Set(selfHost.keys).subtracting(changed), Set(normal.keys).subtracting(changed), variant)
             for key in Set(normal.keys).subtracting(changed) {
@@ -145,6 +146,45 @@ final class SelfHostBuildTests: XCTestCase {
             let config = ServerConfig(storage: InMemoryKeyValueStore(), bakedServerURL: baked)
             XCTAssertEqual(config.serverURL.absoluteString, "https://happy.example.test", variant)
         }
+    }
+
+    func testTheCallGoesToOurOwnServerWithItsAgent() throws {
+        let run = try generate()
+        XCTAssertEqual(run.status, 0, run.stderr)
+        for variant in variants {
+            let info = try plist(at: run.output.appendingPathComponent("Info-\(variant).plist"))
+            XCTAssertEqual(CallAgent.id(info["HappyCallAgentID"]), "agent_happy_voice_el", variant)
+            XCTAssertEqual(info["HappyCallTokenURL"] as? String,
+                           "https://happy.girthbass.duckdns.org/elevenlabs/v1/convai/conversation/token", variant)
+            XCTAssertEqual(info["HappyCallLiveKitURL"] as? String, "wss://happy.girthbass.duckdns.org/elevenlabs", variant)
+        }
+    }
+
+    func testTheCallServerCanBeChangedOrLeftOut() throws {
+        var run = try generate([
+            "SELFHOST_CALL_TOKEN_URL": "http://192.168.2.10:8080/token?a=1&b=2",
+            "SELFHOST_CALL_LIVEKIT_URL": "ws://192.168.2.56:7880",
+            "SELFHOST_CALL_AGENT_ID": "agent_other",
+        ])
+        XCTAssertEqual(run.status, 0, run.stderr)
+        var info = try plist(at: run.output.appendingPathComponent("Info-Preview.plist"))
+        XCTAssertEqual(info["HappyCallTokenURL"] as? String, "http://192.168.2.10:8080/token?a=1&b=2")
+        XCTAssertEqual(info["HappyCallLiveKitURL"] as? String, "ws://192.168.2.56:7880")
+        XCTAssertEqual(info["HappyCallAgentID"] as? String, "agent_other")
+
+        run = try generate(["SELFHOST_CALL_TOKEN_URL": "", "SELFHOST_CALL_LIVEKIT_URL": "", "SELFHOST_CALL_AGENT_ID": ""])
+        XCTAssertEqual(run.status, 0, run.stderr)
+        info = try plist(at: run.output.appendingPathComponent("Info-Preview.plist"))
+        XCTAssertNil(info["HappyCallTokenURL"])
+        XCTAssertNil(info["HappyCallLiveKitURL"])
+        XCTAssertEqual(info["HappyCallAgentID"] as? String, "$(HAPPY_CALL_AGENT_V3_ID)")
+    }
+
+    func testABadCallServerIsRefused() throws {
+        try assertRefused(["SELFHOST_CALL_TOKEN_URL": "ftp://happy.example.test/token"], mentioning: "SELFHOST_CALL_TOKEN_URL")
+        try assertRefused(["SELFHOST_CALL_LIVEKIT_URL": "https://happy.example.test/elevenlabs"], mentioning: "SELFHOST_CALL_LIVEKIT_URL")
+        try assertRefused(["SELFHOST_CALL_LIVEKIT_URL": ""], mentioning: "neither")
+        try assertRefused(["SELFHOST_CALL_AGENT_ID": "agent-other"], mentioning: "SELFHOST_CALL_AGENT_ID")
     }
 
     func testValuesAreEscapedForTheXML() throws {

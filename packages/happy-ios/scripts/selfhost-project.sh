@@ -19,6 +19,9 @@
 #   APP_ENV                              development | preview | production
 #                                        (default preview). Only decides whether
 #                                        the production transport rule applies.
+#   SELFHOST_CALL_TOKEN_URL, SELFHOST_CALL_LIVEKIT_URL, SELFHOST_CALL_AGENT_ID
+#                                        the call's own server and agent; see
+#                                        scripts/call-server-plist.sh
 #
 # Options:
 #   --plists-only   Validate and write the plists; don't run xcodegen.
@@ -35,7 +38,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --plists-only) PLISTS_ONLY=1 ;;
         --output)      [[ $# -ge 2 ]] || die "--output needs a value"; OUTPUT_DIR="$2"; shift ;;
-        -h|--help)     sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)     sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)             die "unknown option: $1" ;;
     esac
     shift
@@ -113,10 +116,15 @@ $plist =~ s{(</dict>\s*</plist>\s*)$}{\t<key>HappyPushDisabled</key>\n\t<true/>\
 print $plist;
 '
 
+# The call goes to our own ElevenLabs-compatible server: SELFHOST_CALL_* in
+# scripts/call-server-plist.sh, checked before anything is written.
+call_keys="$PACKAGE_DIR/scripts/call-server-plist.sh"
+"$call_keys" --check || exit 1
+
 mkdir -p "$OUTPUT_DIR"
 for variant in Development Preview Production; do
     SELFHOST_NAME="$APP_DISPLAY_NAME" SELFHOST_URL="$SERVER_URL" \
-        perl -e "$derive" < "$PACKAGE_DIR/App/Info-$variant.plist" > "$OUTPUT_DIR/Info-$variant.plist" \
+        perl -e "$derive" < "$PACKAGE_DIR/App/Info-$variant.plist" | "$call_keys" > "$OUTPUT_DIR/Info-$variant.plist" \
         || die "could not derive Info-$variant.plist from App/"
 done
 

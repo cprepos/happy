@@ -25,6 +25,8 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         Offers.launch()
         // The keyboard's frame is remembered from the first moment, for a screen made while it is up.
         KeyboardFrames.start()
+        // The call goes to the build's own ElevenLabs-compatible server, if it names one (addons).
+        CallServer.start()
         return true
     }
 
